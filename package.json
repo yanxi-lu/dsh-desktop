@@ -7,7 +7,8 @@
     "build": "tsc",
     "start": "npm run build && electron .",
     "test": "vitest run",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder --win",
+    "icon": "powershell -ExecutionPolicy Bypass -File scripts/gen-icon.ps1"
   },
   "author": "zhangsheng",
   "license": "MIT",

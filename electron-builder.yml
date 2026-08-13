@@ -1,0 +1,23 @@
+appId: com.zhangsheng.dsh-desktop
+productName: dsh-desktop
+directories:
+  output: release
+files:
+  - dist/**
+  - src/renderer/**
+  - assets/icon.png
+  - assets/tray.png
+  - package.json
+win:
+  target: nsis
+  # R6: 直接使用 256x256 PNG,electron-builder 自动转换为 ICO
+  icon: assets/icon.png
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: dsh-desktop
+  # 产物名固定为 dsh-desktop-setup-<版本>.exe(electron-builder 26 默认带空格,不符合验收要求)
+  artifactName: ${name}-setup-${version}.${ext}
