@@ -1,5 +1,6 @@
 // 入口编排:单实例锁 → 环境检测 → (引导页 | spawn → 就绪 → 主窗) → 托盘驻留。
 import { app, BrowserWindow, ipcMain } from 'electron';
+import type { Tray } from 'electron';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import {
@@ -31,6 +32,9 @@ let onboardingWindow: BrowserWindow | null = null;
 let crashWindow: BrowserWindow | null = null;
 let dshProc: { proc: ChildProcess; url: string } | null = null;
 let quitting = false; // 用户主动退出标志,区分崩溃
+let tray: Tray | null = null; // 托盘常驻引用,防 GC 回收(R14)
+let exitWatchCleanup: (() => void) | null = null; // dsh exit watch 注销器(R15)
+let launching = false; // 启动流程防重入(R16)
 
 const stateFile = join(app.getPath('userData'), 'window-state.json');
 const preloadPath = join(__dirname, 'preload.js');
@@ -48,9 +52,11 @@ async function launch(): Promise<void> {
 
 /** spawn + 轮询,成功后主窗替换中转窗;结果供 retry 如实上报(R12) */
 async function startAndShowMain(): Promise<{ ok: boolean; error?: string }> {
-  closeWindow(loadingWindow);
-  loadingWindow = createLoadingWindow(preloadPath);
+  if (launching) return { ok: false, error: '已有启动流程进行中' };
+  launching = true;
   try {
+    closeWindow(loadingWindow);
+    loadingWindow = createLoadingWindow(preloadPath);
     dshProc = await startDsh(process.env);
     installExitWatch();
     await waitForReady(dshProc.url);
@@ -62,6 +68,8 @@ async function startAndShowMain(): Promise<{ ok: boolean; error?: string }> {
     loadingWindow?.webContents.send('dsh:error', msg);
     // 中转页显示失败状态,等待用户点「重试」
     return { ok: false, error: msg };
+  } finally {
+    launching = false;
   }
 }
 
@@ -94,14 +102,19 @@ function openOnboarding(): void {
 
 /** dsh 进程退出且非用户主动 → 显示崩溃页 */
 function installExitWatch(): void {
+  // 先注销上一代 proc 的 watch,避免旧进程死亡误弹崩溃页(R15)
+  exitWatchCleanup?.();
+  exitWatchCleanup = null;
   // exit 事件挂在 spawn 返回的 ChildProcess 上(Task 3 的 startDsh 已返回 proc)
   const child = dshProc?.proc;
   if (!child?.pid) return;
-  child.once('exit', () => {
+  const onExit = () => {
     if (quitting) return;
     closeWindow(loadingWindow);
     openCrash();
-  });
+  };
+  child.once('exit', onExit);
+  exitWatchCleanup = () => child.removeListener('exit', onExit);
 }
 
 function openCrash(): void {
@@ -141,6 +154,11 @@ ipcMain.handle('dsh:retry', async () => {
     // 重试前先关掉崩溃页/中转页(crash.html 承诺「重启成功时主进程会关闭崩溃窗」)
     closeWindow(crashWindow);
     closeWindow(loadingWindow);
+    // 先注销旧进程的 exit watch,再清理旧进程,顺序不能反(R15)
+    if (exitWatchCleanup) {
+      exitWatchCleanup();
+      exitWatchCleanup = null;
+    }
     // 旧进程若残留,先清理
     if (dshProc?.proc.pid) await killTree(dshProc.proc.pid);
     return await startAndShowMain();
@@ -151,7 +169,7 @@ ipcMain.handle('dsh:retry', async () => {
 
 // ---- 生命周期 ----
 app.whenReady().then(async () => {
-  createTray(
+  tray = createTray(
     {
       onOpen: () => {
         if (mainWindow && !mainWindow.isDestroyed()) {
