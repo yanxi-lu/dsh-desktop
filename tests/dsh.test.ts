@@ -1,9 +1,25 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { resolveDshCommand, detectNode, detectDsh, detectAll, startDsh, waitForReady, killTree } from '../src/main/dsh';
+
+// R20 真机回归:mock node:child_process,锁定默认探测的 shell 行为与命令引号化。
+// execFile 需按回调约定在最后一个参数回调成功,供 promisify 解析。
+const cpMocks = vi.hoisted(() => ({
+  execFile: vi.fn((...args: unknown[]) => {
+    const cb = args[args.length - 1];
+    if (typeof cb === 'function') cb(null, { stdout: '', stderr: '' });
+    return {};
+  }),
+  spawn: vi.fn(),
+}));
+
+vi.mock('node:child_process', () => ({
+  execFile: cpMocks.execFile,
+  spawn: cpMocks.spawn,
+}));
 
 describe('resolveDshCommand', () => {
   it('DSH_BIN 优先:直接返回其值', async () => {
@@ -99,6 +115,34 @@ describe('detectDsh', () => {
       async () => { throw new Error('dsh broken'); },
     );
     expect(r).toBe(false);
+  });
+});
+
+describe('defaultDshCheck(默认探测,R20)', () => {
+  beforeEach(() => cpMocks.execFile.mockClear());
+
+  it('以 shell:true 执行探测(.cmd 无法被 execFile 直接执行,EINVAL)', async () => {
+    const r = await detectDsh({ DSH_BIN: 'C:\\tools\\dsh.cmd' });
+    expect(r).toBe(true);
+    const [cmdArg, argsArg, optsArg] = cpMocks.execFile.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { shell: boolean },
+    ];
+    expect(cmdArg).toBe('"C:\\tools\\dsh.cmd"');
+    expect(argsArg).toEqual(['-V']);
+    expect(optsArg).toMatchObject({ shell: true });
+  });
+
+  it('路径含空格时命令整体带引号,防止被 shell 拼接拆断', async () => {
+    await detectDsh({ DSH_BIN: 'C:\\Program Files\\dsh\\dsh.cmd' });
+    const [cmdArg, , optsArg] = cpMocks.execFile.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { shell: boolean },
+    ];
+    expect(cmdArg).toBe('"C:\\Program Files\\dsh\\dsh.cmd"');
+    expect(optsArg).toMatchObject({ shell: true });
   });
 });
 

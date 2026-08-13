@@ -83,8 +83,10 @@ export async function detectDsh(
 
 /** 默认 dsh 探测:执行 `dsh -V`,成功返回、失败抛错 */
 async function defaultDshCheck(cmd: string): Promise<void> {
-  // .cmd 脚本无法被 execFile 直接执行(实测 EINVAL),必须 shell:true
-  await execFileAsync(cmd, ['-V'], { shell: true });
+  // .cmd 脚本无法被 execFile 直接执行(实测 EINVAL),必须 shell:true;
+  // shell:true 下命令仅按字符串拼接,路径含空格(如 C:\Program Files\dsh\dsh.cmd)
+  // 会被拆断(实测报「不是内部或外部命令」),故命令整体显式加引号(R20)。
+  await execFileAsync(`"${cmd}"`, ['-V'], { shell: true });
 }
 
 /** 汇总检测结果,供引导页展示 */
