@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveDshCommand, detectNode, detectDsh, detectAll } from '../src/main/dsh';
+import { EventEmitter } from 'node:events';
+import { config } from '../src/main/config';
+import { resolveDshCommand, detectNode, detectDsh, detectAll, startDsh, waitForReady, killTree } from '../src/main/dsh';
 
 describe('resolveDshCommand', () => {
   it('DSH_BIN 优先:直接返回其值', async () => {
@@ -88,5 +90,58 @@ describe('detectAll', () => {
     const env = { DSH_BIN: 'C:\\tools\\dsh.cmd' };
     const r = await detectAll(env, async () => {}, async () => [], async () => {});
     expect(r).toEqual({ node: true, dsh: true });
+  });
+});
+
+// 测试用 spawn 替身:记录调用参数,返回一个假进程对象
+function fakeProc() {
+  const emitter = new EventEmitter();
+  return Object.assign(emitter, { pid: 4242, kill: vi.fn() });
+}
+
+describe('startDsh', () => {
+  it('解析到 dsh 后以 shell:true 启动 web,返回 url', async () => {
+    const proc = fakeProc();
+    const spawnFn = vi.fn(async () => proc);
+    const env = { DSH_BIN: 'C:\\tools\\dsh.cmd' };
+    const r = await startDsh(env, spawnFn);
+    expect(spawnFn).toHaveBeenCalledWith('C:\\tools\\dsh.cmd', ['web'], { shell: true, windowsHide: true, env });
+    expect(r.url).toBe('http://127.0.0.1:3080');
+    expect(r.proc.pid).toBe(4242);
+  });
+
+  it('未安装 dsh 时抛错', async () => {
+    const env = {};
+    await expect(startDsh(env, async () => { throw new Error('never'); }))
+      .rejects.toThrow(/dsh/i);
+  });
+});
+
+describe('waitForReady', () => {
+  it('2xx 即视为就绪', async () => {
+    let calls = 0;
+    const fetchFn = vi.fn(async () => {
+      calls += 1;
+      return calls < 3 ? { ok: false, status: 404 } : { ok: true, status: 200 };
+    }) as unknown as typeof fetch;
+    await waitForReady('http://127.0.0.1:3080', {
+      timeoutMs: 5000, pollIntervalMs: 10, fetchFn,
+    });
+    expect(calls).toBe(3);
+  });
+
+  it('超时抛错', async () => {
+    const fetchFn = vi.fn(async () => ({ ok: false, status: 500 })) as unknown as typeof fetch;
+    await expect(
+      waitForReady('http://127.0.0.1:3080', { timeoutMs: 50, pollIntervalMs: 10, fetchFn }),
+    ).rejects.toThrow(/timeout|超时/i);
+  });
+});
+
+describe('killTree', () => {
+  it('用 taskkill /T /F 树杀', async () => {
+    const execFn = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    await killTree(4242, execFn);
+    expect(execFn).toHaveBeenCalledWith('taskkill /pid 4242 /T /F');
   });
 });

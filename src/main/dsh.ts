@@ -1,9 +1,10 @@
 // dsh 进程管理:检测、spawn、就绪轮询、树杀。
 // 本模块不依赖 Electron API,可在纯 Node 环境(vitest)下测试。
-import { execFile } from 'node:child_process';
+import { execFile, spawn, ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { config, dshUrl } from './config';
 
 const execFileAsync = promisify(execFile);
 
@@ -93,4 +94,79 @@ export async function detectAll(
     detectDsh(env, whereFn, execFn),
   ]);
   return { node, dsh };
+}
+
+export type SpawnFn = (
+  cmd: string,
+  args: string[],
+  opts: { shell: boolean; windowsHide: boolean; env?: NodeJS.ProcessEnv },
+) => Promise<ChildProcess>;
+
+export type FetchLike = (url: string) => Promise<{ ok: boolean; status: number }>;
+
+export type ExecFn = (cmd: string) => Promise<{ stdout: string; stderr: string }>;
+
+const defaultSpawn: SpawnFn = (cmd, args, opts) =>
+  new Promise((resolve, reject) => {
+    // Windows 上 dsh 是 .cmd 脚本,必须 shell:true
+    const child = spawn(cmd, args, { ...opts, shell: true, windowsHide: true });
+    child.once('error', reject);   // spawn 失败(如 ENOENT)在此捕获
+    child.once('spawn', () => resolve(child));
+  });
+
+const defaultFetch: FetchLike = async (url) => {
+  const res = await fetch(url);
+  return { ok: res.ok, status: res.status };
+};
+
+const defaultExec: ExecFn = async (cmd) => {
+  const { stdout, stderr } = await execFileAsync(cmd, { shell: true });
+  return { stdout, stderr };
+};
+
+/** 启动 dsh web 服务,返回子进程与目标地址 */
+export async function startDsh(
+  env: NodeJS.ProcessEnv,
+  spawnFn: SpawnFn = defaultSpawn,
+): Promise<{ proc: ChildProcess; url: string }> {
+  const cmd = await resolveDshCommand(env);
+  if (!cmd) {
+    throw new Error('未找到 dsh,请先执行 npm install -g @deepseek-ai/dsh');
+  }
+  const proc = await spawnFn(cmd, config.dshArgs, { shell: true, windowsHide: true, env });
+  return { proc, url: dshUrl() };
+}
+
+/** 轮询直到服务就绪(2xx),超时抛错 */
+export async function waitForReady(
+  url: string,
+  opts: { timeoutMs?: number; pollIntervalMs?: number; fetchFn?: FetchLike } = {},
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? config.readyTimeoutMs;
+  const pollIntervalMs = opts.pollIntervalMs ?? config.pollIntervalMs;
+  const fetchFn = opts.fetchFn ?? defaultFetch;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetchFn(url);
+      if (res.ok) return;
+    } catch {
+      // 服务尚未监听,继续轮询
+    }
+    await sleep(pollIntervalMs);
+  }
+  throw new Error(`dsh 服务 ${timeoutMs}ms 内未就绪(timeout),请手动运行 dsh web 排查`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** 树杀 dsh 进程树,不留孤儿进程 */
+export async function killTree(pid: number, execFn: ExecFn = defaultExec): Promise<void> {
+  try {
+    await execFn(`taskkill /pid ${pid} /T /F`);
+  } catch {
+    // 进程可能已自行退出,忽略
+  }
 }
