@@ -115,8 +115,9 @@ export type ExecFn = (cmd: string) => Promise<{ stdout: string; stderr: string }
 
 const defaultSpawn: SpawnFn = (cmd, args, opts) =>
   new Promise((resolve, reject) => {
-    // Windows 上 dsh 是 .cmd 脚本,必须 shell:true
-    const child = spawn(cmd, args, { ...opts, shell: true, windowsHide: true });
+    // Windows 上 dsh 是 .cmd 脚本,必须 shell:true;
+    // 命令整体加引号:shell:true 下仅字符串拼接,路径含空格会被拆断(R21)
+    const child = spawn(`"${cmd}"`, args, { ...opts, shell: true, windowsHide: true });
     child.once('error', reject);   // spawn 失败(如 ENOENT)在此捕获
     child.once('spawn', () => resolve(child));
   });

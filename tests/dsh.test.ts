@@ -177,6 +177,46 @@ describe('startDsh', () => {
   });
 });
 
+describe('defaultSpawn(默认 spawn,R21)', () => {
+  beforeEach(() => cpMocks.spawn.mockClear());
+
+  it('命令带引号且 shell:true(路径含空格不拆断)', async () => {
+    // spawn 替身:返回假进程并异步触发 'spawn',供 defaultSpawn resolve
+    cpMocks.spawn.mockImplementationOnce(() => {
+      const proc = fakeProc();
+      setImmediate(() => proc.emit('spawn'));
+      return proc;
+    });
+    const r = await startDsh({ DSH_BIN: 'C:\\Program Files\\dsh\\dsh.cmd' });
+    expect(r.url).toBe('http://127.0.0.1:3080');
+    const [cmdArg, argsArg, optsArg] = cpMocks.spawn.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { shell: boolean; windowsHide: boolean },
+    ];
+    expect(cmdArg).toBe('"C:\\Program Files\\dsh\\dsh.cmd"');
+    expect(argsArg).toEqual(['web']);
+    expect(optsArg).toMatchObject({ shell: true, windowsHide: true });
+  });
+
+  it('命令无空格时同样带引号(行为一致)', async () => {
+    cpMocks.spawn.mockImplementationOnce(() => {
+      const proc = fakeProc();
+      setImmediate(() => proc.emit('spawn'));
+      return proc;
+    });
+    await startDsh({ DSH_BIN: 'E:\\nodejs\\dsh.cmd' });
+    const [cmdArg, argsArg, optsArg] = cpMocks.spawn.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { shell: boolean; windowsHide: boolean },
+    ];
+    expect(cmdArg).toBe('"E:\\nodejs\\dsh.cmd"');
+    expect(argsArg).toEqual(['web']);
+    expect(optsArg).toMatchObject({ shell: true, windowsHide: true });
+  });
+});
+
 describe('waitForReady', () => {
   it('2xx 即视为就绪', async () => {
     let calls = 0;
