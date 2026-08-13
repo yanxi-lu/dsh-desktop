@@ -2,6 +2,7 @@
 // 本模块不依赖 Electron API,可在纯 Node 环境(vitest)下测试。
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const execFileAsync = promisify(execFile);
@@ -23,9 +24,10 @@ export async function resolveDshCommand(
   // 1) DSH_BIN:显式指定,直接使用
   if (env.DSH_BIN) return env.DSH_BIN;
 
-  // 2) DSH_HOME:自定义安装根目录,取其下的 dsh.cmd
+  // 2) DSH_HOME:自定义安装根目录,探测其下的 dsh.cmd
   if (env.DSH_HOME) {
-    return join(env.DSH_HOME, 'dsh.cmd');
+    const cand = join(env.DSH_HOME, 'dsh.cmd');
+    if (existsSync(cand)) return cand;
   }
 
   // 3) PATH:交给 where 解析(等价于 shell 的 where dsh)
@@ -58,13 +60,25 @@ async function defaultNodeCheck(): Promise<void> {
   await execFileAsync('node', ['--version']);
 }
 
-/** 检测 dsh 是否可用(解析到可执行路径即为可用) */
+/** 检测 dsh 是否可用(解析出候选路径后真实执行 `dsh -V` 探测) */
 export async function detectDsh(
   env: NodeJS.ProcessEnv,
   whereFn?: (cmd: string) => Promise<string[]>,
+  execFn: (cmd: string) => Promise<void> = defaultDshCheck,
 ): Promise<boolean> {
   const cmd = await resolveDshCommand(env, whereFn);
-  return cmd !== null;
+  if (!cmd) return false;
+  try {
+    await execFn(cmd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 默认 dsh 探测:执行 `dsh -V`,成功返回、失败抛错 */
+async function defaultDshCheck(cmd: string): Promise<void> {
+  await execFileAsync(cmd, ['-V']);
 }
 
 /** 汇总检测结果,供引导页展示 */
@@ -72,10 +86,11 @@ export async function detectAll(
   env: NodeJS.ProcessEnv,
   nodeCheckFn?: () => Promise<void>,
   whereFn?: (cmd: string) => Promise<string[]>,
+  execFn?: (cmd: string) => Promise<void>,
 ): Promise<DetectResult> {
   const [node, dsh] = await Promise.all([
     detectNode(nodeCheckFn),
-    detectDsh(env, whereFn),
+    detectDsh(env, whereFn, execFn),
   ]);
   return { node, dsh };
 }
