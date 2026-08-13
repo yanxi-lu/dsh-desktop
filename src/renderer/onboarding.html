@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>dsh-desktop 环境检测</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      margin: 0; padding: 40px 48px; line-height: 1.7;
+    }
+    h1 { font-size: 22px; }
+    .row { display: flex; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid rgba(128,128,128,.25); }
+    .badge { font-weight: bold; }
+    .ok { color: #1a7f37; }
+    .bad { color: #cf222e; }
+    pre { background: rgba(128,128,128,.12); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
+    button { padding: 8px 22px; font-size: 15px; cursor: pointer; }
+    #hint { margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>dsh-desktop 首次启动</h1>
+  <p>本应用是 DeepSeek Harness(dsh)的桌面套壳,需要本机已安装以下环境:</p>
+  <div id="rows"></div>
+  <h2>安装 dsh</h2>
+  <p>已安装 Node.js 后,在任意终端执行:</p>
+  <pre id="cmd">npm install -g @deepseek-ai/dsh</pre>
+  <button id="copy">复制命令</button>
+  <button id="recheck">重新检测</button>
+  <p id="hint"></p>
+  <script>
+    const rowsEl = document.getElementById('rows');
+    function render(status) {
+      rowsEl.innerHTML = '';
+      const items = [
+        ['Node.js', status.node],
+        ['dsh (DeepSeek Harness)', status.dsh],
+      ];
+      for (const [name, ok] of items) {
+        const div = document.createElement('div');
+        div.className = 'row';
+        const span = document.createElement('span');
+        span.textContent = name;
+        const badge = document.createElement('span');
+        badge.className = 'badge ' + (ok ? 'ok' : 'bad');
+        badge.textContent = ok ? '✓ 已安装' : '✗ 未安装';
+        div.append(span, badge);
+        rowsEl.append(div);
+      }
+      const ready = status.node && status.dsh;
+      document.getElementById('hint').textContent = ready
+        ? '环境就绪,正在启动…' : '';
+    }
+    document.getElementById('copy').onclick = async () => {
+      await navigator.clipboard.writeText(document.getElementById('cmd').textContent);
+      document.getElementById('copy').textContent = '已复制';
+      setTimeout(() => { document.getElementById('copy').textContent = '复制命令'; }, 1500);
+    };
+    document.getElementById('recheck').onclick = async () => {
+      const r = await window.dshApp.recheck();
+      render(r);
+    };
+    window.dshApp.getStatus().then(render);
+  </script>
+</body>
+</html>

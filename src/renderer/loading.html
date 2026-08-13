@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>正在启动 dsh</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; text-align: center; padding-top: 70px; }
+    .spinner {
+      width: 36px; height: 36px; margin: 0 auto 20px;
+      border: 4px solid rgba(128,128,128,.3); border-top-color: #0969da;
+      border-radius: 50%; animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #error { display: none; color: #cf222e; white-space: pre-wrap; max-width: 90%; margin: 10px auto; }
+    button { padding: 8px 22px; font-size: 15px; cursor: pointer; display: none; }
+  </style>
+</head>
+<body>
+  <div class="spinner"></div>
+  <p id="status">正在启动 dsh 服务…</p>
+  <p id="error"></p>
+  <button id="retry">重试</button>
+  <script>
+    window.dshApp.onError((msg) => {
+      document.querySelector('.spinner').style.display = 'none';
+      document.getElementById('status').textContent = '启动失败';
+      document.getElementById('error').textContent = msg;
+      document.getElementById('error').style.display = 'block';
+      document.getElementById('retry').style.display = 'inline-block';
+    });
+    document.getElementById('retry').onclick = async () => {
+      document.querySelector('.spinner').style.display = 'block';
+      document.getElementById('status').textContent = '正在重新启动 dsh 服务…';
+      document.getElementById('error').style.display = 'none';
+      document.getElementById('retry').style.display = 'none';
+      await window.dshApp.retry();
+    };
+  </script>
+</body>
+</html>

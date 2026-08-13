@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>dsh 服务已停止</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; text-align: center; padding-top: 70px; }
+    p { line-height: 1.7; }
+    button { padding: 8px 22px; font-size: 15px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>dsh 服务已停止</h1>
+  <p>DeepSeek Harness 进程意外退出。<br />你可以重启服务,或在托盘菜单中退出应用。</p>
+  <button id="restart">重启服务</button>
+  <p id="result"></p>
+  <script>
+    document.getElementById('restart').onclick = async () => {
+      document.getElementById('restart').disabled = true;
+      document.getElementById('result').textContent = '正在重启…';
+      const r = await window.dshApp.retry();
+      document.getElementById('restart').disabled = false;
+      if (!r.ok) {
+        document.getElementById('result').textContent = '重启失败:' + (r.error || '未知错误');
+      }
+      // 成功时主进程会关闭崩溃窗并打开主窗
+    };
+  </script>
+</body>
+</html>
