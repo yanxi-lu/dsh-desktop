@@ -46,8 +46,8 @@ async function launch(): Promise<void> {
   await startAndShowMain();
 }
 
-/** spawn + 轮询,成功后主窗替换中转窗 */
-async function startAndShowMain(): Promise<void> {
+/** spawn + 轮询,成功后主窗替换中转窗;结果供 retry 如实上报(R12) */
+async function startAndShowMain(): Promise<{ ok: boolean; error?: string }> {
   closeWindow(loadingWindow);
   loadingWindow = createLoadingWindow(preloadPath);
   try {
@@ -56,14 +56,20 @@ async function startAndShowMain(): Promise<void> {
     await waitForReady(dshProc.url);
     closeWindow(loadingWindow);
     openMainWindow();
+    return { ok: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     loadingWindow?.webContents.send('dsh:error', msg);
     // 中转页显示失败状态,等待用户点「重试」
+    return { ok: false, error: msg };
   }
 }
 
 function openMainWindow(): void {
+  // 崩溃恢复路径:旧主窗(死页面)直接销毁,避免双主窗与不可达窗口(R13)
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.destroy();
+  }
   const state = loadWindowState(stateFile);
   mainWindow = createMainWindow(state, preloadPath);
   installWindowStateHooks(mainWindow, stateFile);
@@ -137,8 +143,7 @@ ipcMain.handle('dsh:retry', async () => {
     closeWindow(loadingWindow);
     // 旧进程若残留,先清理
     if (dshProc?.proc.pid) await killTree(dshProc.proc.pid);
-    await startAndShowMain();
-    return { ok: true };
+    return await startAndShowMain();
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
