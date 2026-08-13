@@ -55,6 +55,24 @@ describe('resolveDshCommand', () => {
     const r = await resolveDshCommand({}, async () => []);
     expect(r).toBeNull();
   });
+
+  it('PATH 命中优先选择可执行扩展名:跳过无扩展名 sh shim 与 .ps1(R19)', async () => {
+    const whereFn = vi.fn(async (cmd: string) =>
+      cmd === 'dsh'
+        ? ['E:\\nodejs\\dsh', 'E:\\nodejs\\dsh.cmd', 'E:\\nodejs\\dsh.ps1']
+        : [],
+    );
+    const r = await resolveDshCommand({ PATH: 'C:\\Windows' }, whereFn);
+    expect(r).toBe('E:\\nodejs\\dsh.cmd');
+  });
+
+  it('PATH 命中无任何可执行扩展名时退回首个命中(保持旧行为)', async () => {
+    const whereFn = vi.fn(async (cmd: string) =>
+      cmd === 'dsh' ? ['E:\\nodejs\\dsh'] : [],
+    );
+    const r = await resolveDshCommand({ PATH: 'C:\\Windows' }, whereFn);
+    expect(r).toBe('E:\\nodejs\\dsh');
+  });
 });
 
 describe('detectNode', () => {

@@ -33,7 +33,11 @@ export async function resolveDshCommand(
 
   // 3) PATH:交给 where 解析(等价于 shell 的 where dsh)
   const hits = await whereFn('dsh');
-  return hits[0] ?? null;
+  // Windows 下 npm 全局安装会同时生成无扩展名 sh shim(dsh)与 dsh.cmd/dsh.ps1,
+  // 而 `where dsh` 会把无法直接执行的无扩展名 shim 排在首位(实测 ENOENT)。
+  // 优先选择 Windows 可直接执行的扩展名,否则退回首个命中。
+  const executable = hits.find((h) => /\.(cmd|exe|bat|com)$/i.test(h.trim()));
+  return executable ?? hits[0] ?? null;
 }
 
 async function defaultWhere(cmd: string): Promise<string[]> {
@@ -79,7 +83,8 @@ export async function detectDsh(
 
 /** 默认 dsh 探测:执行 `dsh -V`,成功返回、失败抛错 */
 async function defaultDshCheck(cmd: string): Promise<void> {
-  await execFileAsync(cmd, ['-V']);
+  // .cmd 脚本无法被 execFile 直接执行(实测 EINVAL),必须 shell:true
+  await execFileAsync(cmd, ['-V'], { shell: true });
 }
 
 /** 汇总检测结果,供引导页展示 */
