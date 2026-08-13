@@ -3,7 +3,6 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { config } from '../src/main/config';
 import { resolveDshCommand, detectNode, detectDsh, detectAll, startDsh, waitForReady, killTree } from '../src/main/dsh';
 
 describe('resolveDshCommand', () => {
@@ -111,8 +110,7 @@ describe('startDsh', () => {
   });
 
   it('未安装 dsh 时抛错', async () => {
-    const env = {};
-    await expect(startDsh(env, async () => { throw new Error('never'); }))
+    await expect(startDsh({}, async () => { throw new Error('never'); }, async () => []))
       .rejects.toThrow(/dsh/i);
   });
 });

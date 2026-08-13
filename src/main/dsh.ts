@@ -128,8 +128,9 @@ const defaultExec: ExecFn = async (cmd) => {
 export async function startDsh(
   env: NodeJS.ProcessEnv,
   spawnFn: SpawnFn = defaultSpawn,
+  whereFn?: (cmd: string) => Promise<string[]>,
 ): Promise<{ proc: ChildProcess; url: string }> {
-  const cmd = await resolveDshCommand(env);
+  const cmd = await resolveDshCommand(env, whereFn);
   if (!cmd) {
     throw new Error('未找到 dsh,请先执行 npm install -g @deepseek-ai/dsh');
   }
