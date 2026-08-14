@@ -9,7 +9,7 @@ export interface TrayActions {
 }
 
 export function createTray(actions: TrayActions, iconPath: string): Tray {
-  // 托盘图标 16x16;assets/tray.png 由 Task 7 生成(R6)
+  // 托盘图标 32x32;assets/tray.png 由 scripts/gen-icon.ps1 从高清源图生成,高 DPI 下更清晰
   const icon = nativeImage.createFromPath(iconPath);
   const tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
   tray.setToolTip('dsh-desktop');

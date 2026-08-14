@@ -10,8 +10,9 @@ files:
   - package.json
 win:
   target: nsis
-  # R6: 直接使用 256x256 PNG,electron-builder 自动转换为 ICO
-  icon: assets/icon.png
+  # R6: 使用 scripts/gen-icon.ps1 从 2048x2048 源图生成的多尺寸 ICO(16~512),
+  # 直接嵌入 exe、NSIS 安装包与桌面/开始菜单快捷方式(含 256/512 大图标)
+  icon: assets/icon.ico
 nsis:
   oneClick: false
   perMachine: false

@@ -18,10 +18,15 @@ DeepSeek Harness(`dsh`)的 Windows 桌面套壳:轻量壳 + 首次引导 + 托�
 
 > 安装包未做代码签名,SmartScreen 提示时选「仍要运行」。
 
-## 图标授权
+## 图标
 
-应用图标为 OpenMoji 蓝鲸(🐋),来源 [OpenMoji](https://openmoji.org/),
-授权 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)。
+应用图标与托盘图标来自项目根目录的高清源图(2048×2048 鲸鱼娘 PNG)。
+`npm run icon`(scripts/gen-icon.ps1)会从源图重新生成:
+
+- `assets/icon.ico` — 多尺寸 ICO(16~512),嵌入 exe、安装包与桌面/开始菜单快捷方式
+- `assets/icon.png` — 1024×1024 应用 PNG
+- `assets/tray.png` — 32×32 托盘图标
+
 本项目为非官方套壳,与 DeepSeek 无隶属关系。
 
 ## 开发
