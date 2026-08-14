@@ -18,6 +18,12 @@ DeepSeek Harness(`dsh`)的 Windows 桌面套壳:轻量壳 + 首次引导 + 托�
 
 > 安装包未做代码签名,SmartScreen 提示时选「仍要运行」。
 
+## 图标授权
+
+应用图标为 OpenMoji 蓝鲸(🐋),来源 [OpenMoji](https://openmoji.org/),
+授权 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)。
+本项目为非官方套壳,与 DeepSeek 无隶属关系。
+
 ## 开发
 
 ```bash
