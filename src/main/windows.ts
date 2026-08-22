@@ -19,10 +19,12 @@ export interface WindowState {
 export const DEFAULT_STATE: WindowState = { width: 1280, height: 800 };
 const MIN_WIDTH = 800;
 const MIN_HEIGHT = 600;
+const TOOLBAR_HEIGHT = 58;
 
 type ElectronApi = typeof import('electron');
 
 let electronApi: ElectronApi | undefined;
+const dshViews = new WeakMap<BrowserWindow, Electron.WebContentsView>();
 
 /** 延迟加载 electron API(见文件头注释) */
 function electron(): ElectronApi {
@@ -100,7 +102,7 @@ function rendererPath(app: Electron.App, name: string): string {
 export function createOnboardingWindow(preloadPath: string): BrowserWindow {
   const { BrowserWindow, app } = electron();
   const win = new BrowserWindow(
-    attachPreload({ ...baseOptions(), width: 720, height: 640, resizable: false }, preloadPath),
+    attachPreload({ ...baseOptions(), width: 720, height: 720, resizable: false }, preloadPath),
   );
   win.loadFile(rendererPath(app, 'onboarding.html'));
   win.once('ready-to-show', () => win.show());
@@ -129,6 +131,17 @@ export function createCrashWindow(preloadPath: string): BrowserWindow {
   return win;
 }
 
+/** 用量估价与 Harness 版本管理独立窗口。 */
+export function createManagementWindow(preloadPath: string): BrowserWindow {
+  const { BrowserWindow, app } = electron();
+  const win = new BrowserWindow(
+    attachPreload({ ...baseOptions(), width: 1040, height: 820, minWidth: 820, minHeight: 680 }, preloadPath),
+  );
+  win.loadFile(rendererPath(app, 'management.html'));
+  win.once('ready-to-show', () => win.show());
+  return win;
+}
+
 /** 坐标是否落在任一显示器工作区内(带 64px 容差,标题栏仍可拖回) */
 function isPositionVisible(screen: Electron.Screen, x: number, y: number): boolean {
   return screen.getAllDisplays().some((d) => {
@@ -137,9 +150,12 @@ function isPositionVisible(screen: Electron.Screen, x: number, y: number): boole
   });
 }
 
-/** 主窗:加载 dsh Web GUI,恢复上次位置/尺寸,关闭即隐藏 */
+/**
+ * 主窗:顶部加载本地桌面控制栏,下方用独立 WebContentsView 加载 dsh Web GUI。
+ * 控制栏不属于 dsh 页面,因此 dsh 崩溃或升级时仍可执行重启/更新。
+ */
 export function createMainWindow(state: WindowState, preloadPath: string): BrowserWindow {
-  const { BrowserWindow, app, screen } = electron();
+  const { BrowserWindow, WebContentsView, app, screen, shell } = electron();
   const opts = attachPreload(
     {
       ...baseOptions(),
@@ -156,7 +172,49 @@ export function createMainWindow(state: WindowState, preloadPath: string): Brows
     opts.y = state.y;
   }
   const win = new BrowserWindow(opts);
-  win.loadURL(dshUrl());
+  const dshView = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  });
+  dshViews.set(win, dshView);
+  win.contentView.addChildView(dshView);
+
+  const layoutDshView = (): void => {
+    if (win.isDestroyed() || dshView.webContents.isDestroyed()) return;
+    const bounds = win.getContentBounds();
+    dshView.setBounds({
+      x: 0,
+      y: TOOLBAR_HEIGHT,
+      width: bounds.width,
+      height: Math.max(0, bounds.height - TOOLBAR_HEIGHT),
+    });
+  };
+  layoutDshView();
+  win.on('resize', layoutDshView);
+
+  // dsh 中要求新窗口打开的外部链接交给系统浏览器,不再生成失控的 Electron 子窗。
+  dshView.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  void win.loadFile(rendererPath(app, 'shell.html'));
+  void dshView.webContents.loadURL(dshUrl());
   win.once('ready-to-show', () => win.show());
+  win.on('closed', () => {
+    dshViews.delete(win);
+    if (!dshView.webContents.isDestroyed()) dshView.webContents.close({ waitForBeforeUnload: false });
+  });
   return win;
+}
+
+/** dsh 服务重启后重新加载主窗中的 Web GUI。 */
+export async function reloadDshView(win: BrowserWindow): Promise<boolean> {
+  const dshView = dshViews.get(win);
+  if (!dshView || dshView.webContents.isDestroyed()) return false;
+  await dshView.webContents.loadURL(dshUrl());
+  return true;
 }

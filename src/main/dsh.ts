@@ -113,6 +113,25 @@ export type FetchLike = (url: string) => Promise<{ ok: boolean; status: number }
 
 export type ExecFn = (cmd: string) => Promise<{ stdout: string; stderr: string }>;
 
+export type CommandExecFn = (
+  cmd: string,
+  args: string[],
+) => Promise<{ stdout: string; stderr: string }>;
+
+export interface DshUpdateProgress {
+  message: string;
+  downloaded?: number;
+  elapsedSeconds?: number;
+}
+
+export interface StreamingUpdateOptions {
+  whereFn?: (cmd: string) => Promise<string[]>;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  spawnFn?: typeof spawn;
+  targetVersion?: string;
+}
+
 const defaultSpawn: SpawnFn = (cmd, args, opts) =>
   new Promise((resolve, reject) => {
     // Windows 上 dsh 是 .cmd 脚本,必须 shell:true;
@@ -131,6 +150,299 @@ const defaultExec: ExecFn = async (cmd) => {
   const { stdout, stderr } = await execFileAsync(cmd, { shell: true });
   return { stdout, stderr };
 };
+
+/**
+ * 执行 Windows 命令 shim(.cmd/.bat)的统一入口。
+ * cmd 来自环境变量或 where 的真实路径,参数由本程序固定生成。
+ */
+const defaultCommandExec: CommandExecFn = async (cmd, args) => {
+  const { stdout, stderr } = await execFileAsync(`"${cmd}"`, args, {
+    shell: true,
+    windowsHide: true,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  return { stdout, stderr };
+};
+
+/** 从命令输出中提取可展示的版本号,同时兼容 `0.1.0` 与 `dsh/0.1.0`。 */
+export function parseVersionOutput(stdout: string, stderr = ''): string | null {
+  const output = `${stdout}\n${stderr}`.trim();
+  if (!output) return null;
+  const semver = output.match(/\bv?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\b/);
+  return semver?.[1] ?? output.split(/\r?\n/, 1)[0].trim();
+}
+
+/** 获取本机 dsh 版本;未安装或探测失败时返回 null。 */
+export async function getDshVersion(
+  env: NodeJS.ProcessEnv,
+  whereFn?: (cmd: string) => Promise<string[]>,
+  execFn: CommandExecFn = defaultCommandExec,
+): Promise<string | null> {
+  const cmd = await resolveDshCommand(env, whereFn);
+  if (!cmd) return null;
+  try {
+    const result = await execFn(cmd, ['-V']);
+    return parseVersionOutput(result.stdout, result.stderr);
+  } catch {
+    return null;
+  }
+}
+
+/** 解析 npm.cmd,用于一键安装/更新 DeepSeek Harness。 */
+export async function resolveNpmCommand(
+  env: NodeJS.ProcessEnv,
+  whereFn: (cmd: string) => Promise<string[]> = defaultWhere,
+): Promise<string | null> {
+  if (env.NPM_BIN) return env.NPM_BIN;
+  const hits = await whereFn('npm');
+  const executable = hits.find((h) => /\.(cmd|exe|bat|com)$/i.test(h.trim()));
+  return executable ?? hits[0] ?? null;
+}
+
+const DSH_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/** 只允许 latest 或完整语义版本,禁止把任意参数拼进 npm 包规格。 */
+export function normalizeDshTargetVersion(value: unknown): string {
+  if (value === undefined || value === null || value === '' || value === 'latest') return 'latest';
+  if (typeof value !== 'string' || !DSH_VERSION_PATTERN.test(value)) {
+    throw new Error('Harness 目标版本格式无效');
+  }
+  return value;
+}
+
+function compareSemverDescending(left: string, right: string): number {
+  const parse = (value: string): { core: number[]; pre: string[] } => {
+    const withoutBuild = value.split('+', 1)[0];
+    const [core, prerelease = ''] = withoutBuild.split('-', 2);
+    return { core: core.split('.').map(Number), pre: prerelease ? prerelease.split('.') : [] };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  for (let i = 0; i < 3; i += 1) {
+    if (a.core[i] !== b.core[i]) return b.core[i] - a.core[i];
+  }
+  if (a.pre.length === 0 && b.pre.length > 0) return -1;
+  if (b.pre.length === 0 && a.pre.length > 0) return 1;
+  const length = Math.max(a.pre.length, b.pre.length);
+  for (let i = 0; i < length; i += 1) {
+    if (a.pre[i] === undefined) return 1;
+    if (b.pre[i] === undefined) return -1;
+    if (a.pre[i] === b.pre[i]) continue;
+    const aNumber = /^\d+$/.test(a.pre[i]) ? Number(a.pre[i]) : null;
+    const bNumber = /^\d+$/.test(b.pre[i]) ? Number(b.pre[i]) : null;
+    if (aNumber !== null && bNumber !== null) return bNumber - aNumber;
+    if (aNumber !== null) return 1;
+    if (bNumber !== null) return -1;
+    return b.pre[i].localeCompare(a.pre[i], 'en');
+  }
+  return 0;
+}
+
+/** 解析 npm versions JSON,过滤异常值、去重并按新到旧排列。 */
+export function parsePublishedDshVersions(output: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(output);
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.filter(
+      (value): value is string => typeof value === 'string' && DSH_VERSION_PATTERN.test(value),
+    ))].sort(compareSemverDescending);
+  } catch {
+    return [];
+  }
+}
+
+/** 查询 DeepSeek 官方 npm 包的 latest 版本。网络不可用时返回 null。 */
+export async function getLatestDshVersion(
+  env: NodeJS.ProcessEnv,
+  whereFn?: (cmd: string) => Promise<string[]>,
+  execFn: CommandExecFn = defaultCommandExec,
+): Promise<string | null> {
+  const npmCmd = await resolveNpmCommand(env, whereFn);
+  if (!npmCmd) return null;
+  try {
+    const result = await execFn(npmCmd, ['view', '@deepseek-ai/dsh@latest', 'version', '--json']);
+    return parseVersionOutput(result.stdout, result.stderr);
+  } catch {
+    return null;
+  }
+}
+
+/** 查询官方 npm 包所有已发布版本,用于安装指定版本或回退。 */
+export async function getDshVersions(
+  env: NodeJS.ProcessEnv,
+  whereFn?: (cmd: string) => Promise<string[]>,
+  execFn: CommandExecFn = defaultCommandExec,
+): Promise<string[]> {
+  const npmCmd = await resolveNpmCommand(env, whereFn);
+  if (!npmCmd) return [];
+  try {
+    const result = await execFn(npmCmd, ['view', '@deepseek-ai/dsh', 'versions', '--json']);
+    return parsePublishedDshVersions(result.stdout);
+  } catch {
+    return [];
+  }
+}
+
+/** 将 npm 流式日志转换成不会泄露路径、适合直接展示的中文进度。 */
+export function describeNpmProgressLine(
+  line: string,
+  downloaded: number,
+): { message: string; downloaded: number } | null {
+  if (/\bhttp fetch\b/i.test(line)) {
+    const next = downloaded + 1;
+    return { message: `正在下载官方 Harness 组件…已完成 ${next} 项`, downloaded: next };
+  }
+  if (/\b(info run|postinstall|preinstall|install script)\b/i.test(line)) {
+    return { message: '组件已下载,正在执行本地安装脚本…', downloaded };
+  }
+  const added = line.match(/\badded\s+(\d+)\s+packages?\b/i);
+  if (added) {
+    return { message: `依赖安装完成,共处理 ${added[1]} 个包`, downloaded };
+  }
+  return null;
+}
+
+/**
+ * 流式执行官方 Harness npm 安装。持续上报心跳和下载数量,支持取消与超时,
+ * 避免 execFile 把全部输出缓存到结束后才返回而让界面看起来“卡死”。
+ */
+export async function updateDshWithProgress(
+  env: NodeJS.ProcessEnv,
+  onProgress: (progress: DshUpdateProgress) => void,
+  options: StreamingUpdateOptions = {},
+): Promise<string> {
+  const npmCmd = await resolveNpmCommand(env, options.whereFn);
+  if (!npmCmd) throw new Error('未找到 npm,请先安装 Node.js');
+  const spawnFn = options.spawnFn ?? spawn;
+  const timeoutMs = options.timeoutMs ?? 15 * 60_000;
+  const targetVersion = normalizeDshTargetVersion(options.targetVersion);
+  const packageSpec = `@deepseek-ai/dsh@${targetVersion}`;
+  const startedAt = Date.now();
+  let downloaded = 0;
+  let lastReportAt = 0;
+  let lastLines: string[] = [];
+  let timedOut = false;
+  let cancelled = false;
+
+  onProgress({ message: '正在准备官方 Harness 安装…', downloaded: 0, elapsedSeconds: 0 });
+  const child = spawnFn(
+    `"${npmCmd}"`,
+    ['install', '-g', packageSpec, '--no-audit', '--no-fund', '--loglevel=http'],
+    {
+      shell: true,
+      windowsHide: true,
+      env: { ...env, FORCE_COLOR: '0', NO_COLOR: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+
+  const handleLine = (line: string): void => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    lastLines = [...lastLines.slice(-7), trimmed];
+    const described = describeNpmProgressLine(trimmed, downloaded);
+    if (!described) return;
+    downloaded = described.downloaded;
+    const now = Date.now();
+    if (now - lastReportAt >= 500) {
+      lastReportAt = now;
+      onProgress({
+        ...described,
+        elapsedSeconds: Math.floor((now - startedAt) / 1000),
+      });
+    }
+  };
+
+  function streamLines(stream: NodeJS.ReadableStream | null): void {
+    if (!stream) return;
+    let remainder = '';
+    stream.setEncoding('utf8');
+    stream.on('data', (chunk: string) => {
+      const parts = `${remainder}${chunk}`.split(/\r?\n/);
+      remainder = parts.pop() ?? '';
+      for (const line of parts) handleLine(line);
+    });
+    stream.on('end', () => { if (remainder) handleLine(remainder); });
+  }
+
+  streamLines(child.stdout);
+  streamLines(child.stderr);
+
+  const heartbeat = setInterval(() => {
+    const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+    const suffix = downloaded > 0 ? `,已完成 ${downloaded} 项` : '';
+    onProgress({
+      message: `官方 Harness 仍在安装中…已用时 ${elapsedSeconds} 秒${suffix}`,
+      downloaded,
+      elapsedSeconds,
+    });
+  }, 5_000);
+
+  const terminateChild = (): void => {
+    if (child.pid) void killTree(child.pid);
+    else child.kill();
+  };
+  const onAbort = (): void => {
+    cancelled = true;
+    onProgress({ message: '正在取消 Harness 安装…', downloaded });
+    terminateChild();
+  };
+  if (options.signal?.aborted) onAbort();
+  else options.signal?.addEventListener('abort', onAbort, { once: true });
+
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    onProgress({ message: '安装超时,正在结束 npm 进程…', downloaded });
+    terminateChild();
+  }, timeoutMs);
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code) => {
+        if (cancelled) reject(new Error('Harness 安装已取消'));
+        else if (timedOut) reject(new Error(`Harness 安装超过 ${Math.round(timeoutMs / 60_000)} 分钟,已自动停止`));
+        else if (code === 0) resolve();
+        else {
+          const detail = lastLines.slice(-4).join(' | ').slice(-600);
+          reject(new Error(`npm 安装失败(exit code ${code ?? 'unknown'})${detail ? `:${detail}` : ''}`));
+        }
+      });
+    });
+  } finally {
+    clearInterval(heartbeat);
+    clearTimeout(timeout);
+    options.signal?.removeEventListener('abort', onAbort);
+  }
+
+  onProgress({
+    message: '官方 Harness 安装完成,正在读取版本…',
+    downloaded,
+    elapsedSeconds: Math.floor((Date.now() - startedAt) / 1000),
+  });
+  const version = await getDshVersion(env, options.whereFn);
+  if (!version) throw new Error('安装完成,但未能读取 dsh 版本;请点击“重新检测”');
+  return version;
+}
+
+/**
+ * 通过 DeepSeek 官方 npm 包全局安装最新版 dsh。既支持首次安装,也支持覆盖升级。
+ * 返回安装完成后的实际版本,方便界面给出明确结果。
+ */
+export async function updateDsh(
+  env: NodeJS.ProcessEnv,
+  whereFn?: (cmd: string) => Promise<string[]>,
+  execFn: CommandExecFn = defaultCommandExec,
+  targetVersion: string = 'latest',
+): Promise<string> {
+  const npmCmd = await resolveNpmCommand(env, whereFn);
+  if (!npmCmd) throw new Error('未找到 npm,请先安装 Node.js');
+  const normalizedVersion = normalizeDshTargetVersion(targetVersion);
+  await execFn(npmCmd, ['install', '-g', `@deepseek-ai/dsh@${normalizedVersion}`]);
+  const version = await getDshVersion(env, whereFn, execFn);
+  if (!version) throw new Error('安装完成,但未能读取 dsh 版本;请重新打开应用检测');
+  return version;
+}
 
 /** 启动 dsh web 服务,返回子进程与目标地址 */
 export async function startDsh(

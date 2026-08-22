@@ -15,9 +15,11 @@ export interface Config {
 export const config: Config = {
   host: '127.0.0.1',
   port: 3080,
-  readyTimeoutMs: 30_000,
+  // 官方 Harness 首次初始化可能超过 30 秒(本机实测约 40 秒),留足 120 秒。
+  readyTimeoutMs: 120_000,
   pollIntervalMs: 500,
-  dshArgs: ['web'],
+  // 官方 CLI 默认会同时打开系统浏览器;桌面套壳使用 --no-open 只启动 Web 服务。
+  dshArgs: ['web', '--no-open'],
 };
 
 /** dsh Web GUI 的完整地址 */

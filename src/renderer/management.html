@@ -1,0 +1,866 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DeepSeek Harness 用量与版本管理</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root { color-scheme: light; }
+    body { margin: 0; color: #12233f; background: #f3f7fd; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+    header { padding: 24px 28px 18px; color: #fff; background: linear-gradient(120deg, #075ed1, #2389ff); }
+    h1 { margin: 0; font-size: 22px; }
+    header p { margin: 0; color: rgba(255,255,255,.82); font-size: 13px; }
+    main { padding: 20px 24px 30px; }
+    section { margin-bottom: 18px; padding: 20px; border: 1px solid #dbe5f3; border-radius: 14px; background: #fff; box-shadow: 0 5px 18px rgba(44,83,130,.06); }
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+    h2 { margin: 0; font-size: 17px; }
+    h3 { margin: 20px 0 8px; font-size: 14px; }
+    .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    button, select, input[type="date"], input[type="password"] { height: 34px; padding: 0 12px; border: 1px solid #c8d7e9; border-radius: 8px; color: #294665; background: #fff; font: 13px "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+    button { cursor: pointer; }
+    button:hover:not(:disabled) { border-color: #408be5; background: #f5f9ff; }
+    button:disabled { cursor: wait; opacity: .58; }
+    button.primary { border-color: #1677ff; color: #fff; background: #1677ff; }
+    button.primary:hover:not(:disabled) { background: #0d69e5; }
+    .date-range-fields { display: flex; align-items: center; gap: 7px; padding: 4px; border: 1px solid #d7e3f2; border-radius: 10px; background: #f6f9fd; }
+    .date-range-fields[hidden] { display: none; }
+    .date-range-fields label { display: flex; align-items: center; gap: 6px; color: #667b99; font-size: 12px; }
+    .date-range-fields input { width: 136px; }
+    .date-range-fields button { height: 32px; }
+    .balance-panel { margin-bottom: 14px; padding: 15px; border: 1px solid #cfe0f5; border-radius: 12px; background: linear-gradient(135deg, #f6faff, #edf5ff); }
+    .balance-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .balance-title { font-size: 14px; font-weight: 700; }
+    .balance-state { padding: 4px 9px; border-radius: 999px; color: #607792; background: #e6edf6; font-size: 11px; }
+    .balance-state.ok { color: #08783f; background: #dff6e9; }
+    .balance-state.error { color: #b5382e; background: #fde8e6; }
+    .balance-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 9px; margin-top: 12px; }
+    .balance-card { padding: 12px; border: 1px solid #dce8f7; border-radius: 10px; background: rgba(255,255,255,.82); }
+    .balance-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: #667b99; font-size: 11px; }
+    .balance-amount { margin-top: 4px; color: #0758c5; font-size: 23px; font-weight: 750; }
+    .balance-parts { display: flex; gap: 14px; margin-top: 7px; color: #667b99; font-size: 11px; }
+    .balance-empty { grid-column: 1 / -1; padding: 10px 0; color: #788da8; font-size: 12px; }
+    .balance-query { display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 9px; margin-top: 12px; }
+    .balance-query input { width: 100%; font-family: Consolas, "SFMono-Regular", monospace; }
+    .balance-meta { min-height: 18px; margin-top: 8px; color: #667b99; font-size: 11px; }
+    .custom-prices { display: grid; grid-template-columns: repeat(3, minmax(130px, 1fr)) auto; gap: 10px; margin: -4px 0 16px; padding: 12px; border: 1px solid #cfe0f5; border-radius: 10px; background: #f5f9ff; }
+    .custom-prices[hidden] { display: none; }
+    .custom-prices label { color: #536b8c; font-size: 11px; }
+    .custom-prices input { width: 100%; height: 32px; margin-top: 4px; padding: 0 9px; border: 1px solid #c8d7e9; border-radius: 7px; }
+    .custom-prices button { align-self: end; }
+    .cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+    .card { min-width: 0; padding: 13px 12px; border-radius: 10px; background: #f5f8fd; }
+    .card.total { color: #0758c5; background: #eaf3ff; }
+    .label { color: #667b99; font-size: 11px; white-space: nowrap; }
+    .value { margin-top: 6px; overflow: hidden; font-size: 18px; font-weight: 700; text-overflow: ellipsis; }
+    .cost { font-size: 21px; }
+    .table-wrap { width: 100%; overflow-x: auto; }
+    table { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+    th, td { padding: 9px 8px; border-bottom: 1px solid #edf1f7; text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: #667b99; font-weight: 500; }
+    .empty-row { padding: 18px; color: #8495ac; text-align: center !important; }
+    .chart-section {
+      position: relative;
+      overflow: hidden;
+      color: #eef4ff;
+      border-color: #303746;
+      background:
+        radial-gradient(circle at 80% -20%, rgba(92,72,255,.22), transparent 38%),
+        radial-gradient(circle at 8% 120%, rgba(0,176,255,.13), transparent 38%),
+        linear-gradient(145deg, #171a22, #1d2028 58%, #171920);
+      box-shadow: 0 16px 34px rgba(20,29,47,.2);
+    }
+    .chart-section::before {
+      position: absolute;
+      top: -110px;
+      right: -80px;
+      width: 330px;
+      height: 220px;
+      border: 1px solid rgba(128,94,255,.13);
+      border-radius: 50%;
+      box-shadow: 0 0 70px rgba(105,75,255,.12), inset 0 0 55px rgba(47,167,255,.05);
+      content: "";
+      pointer-events: none;
+      transform: rotate(-14deg);
+    }
+    .chart-section::after {
+      position: absolute;
+      top: 0;
+      left: 7%;
+      width: 42%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, #39a7ff, #8d63ff, transparent);
+      box-shadow: 0 0 14px rgba(91,139,255,.85);
+      content: "";
+      pointer-events: none;
+    }
+    .chart-section .section-head { margin-bottom: 8px; }
+    .chart-section .hint { color: #8993a7; }
+    .chart-badge { padding: 4px 9px; border: 1px solid rgba(125,107,255,.32); border-radius: 999px; color: #b8adff; background: rgba(111,82,255,.1); font-size: 11px; }
+    .chart-badge::before { display: inline-block; width: 5px; height: 5px; margin-right: 6px; border-radius: 50%; background: #6da7ff; box-shadow: 0 0 8px #6da7ff; content: ""; vertical-align: 1px; }
+    .chart-wrap {
+      position: relative;
+      margin-top: 8px;
+      overflow: hidden;
+      border: 1px solid rgba(142,153,177,.16);
+      border-radius: 12px;
+      background-color: rgba(10,12,18,.32);
+      background-image:
+        linear-gradient(rgba(113,130,166,.032) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(113,130,166,.032) 1px, transparent 1px),
+        radial-gradient(circle at 75% 25%, rgba(111,76,255,.09), transparent 34%);
+      background-size: 32px 32px, 32px 32px, 100% 100%;
+    }
+    .chart-wrap::before { position: absolute; inset: 0; border-radius: inherit; background: linear-gradient(105deg, rgba(255,255,255,.025), transparent 35%, rgba(118,92,255,.035)); content: ""; pointer-events: none; }
+    .chart-wrap::after { position: absolute; top: 0; left: 0; width: 100%; height: 38px; background: linear-gradient(180deg, rgba(68,167,255,.025), transparent); content: ""; pointer-events: none; }
+    #trendChart { position: relative; z-index: 1; width: 100%; height: 360px; }
+    .chart-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 10px; color: #7f899e; font-size: 11px; }
+    .split-grid { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, .92fr); gap: 14px; }
+    .subpanel { min-width: 0; padding: 0 14px 12px; border: 1px solid #e7edf6; border-radius: 10px; }
+    .session-panel { grid-column: 1 / -1; }
+    .recent-scroll { max-height: 330px; overflow: auto; }
+    .session-scroll { max-height: 440px; overflow: auto; }
+    .recent-scroll thead th, .session-scroll thead th { position: sticky; top: 0; z-index: 2; background: #fff; box-shadow: 0 1px #edf1f7; }
+    .subpanel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    .subpanel-note { color: #8495ac; font-size: 11px; }
+    .pagination { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+    .pagination-controls { display: flex; align-items: center; gap: 7px; }
+    .pagination select, .pagination button { height: 30px; padding: 0 9px; font-size: 12px; }
+    .page-info { min-width: 88px; color: #667b99; font-size: 11px; text-align: center; }
+    .session-id { color: #315a89; font-family: Consolas, "SFMono-Regular", monospace; font-weight: 600; }
+    .session-models { max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
+    .token-share { width: 96px; height: 3px; margin: 5px 0 0 auto; overflow: hidden; border-radius: 999px; background: #e8eef7; }
+    .token-share i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #3d8bfd, #8d63ff); }
+    .version-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+    .version-box { padding: 13px 14px; border-radius: 10px; background: #f5f8fd; }
+    .version-value { margin-top: 3px; color: #0758c5; font-size: 16px; font-weight: 700; }
+    .install-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+    .hint { margin: 11px 0 0; color: #667b99; font-size: 12px; line-height: 1.65; }
+    #usageMeta { min-height: 20px; }
+    #operation { min-height: 20px; margin: 10px 0 0; color: #1769d2; font-size: 13px; }
+    #operation.ok { color: #137542; }
+    #operation.error { color: #c0392b; }
+    @media (max-width: 860px) {
+      .cards { grid-template-columns: repeat(2, 1fr); }
+      .card.total { grid-column: 1 / -1; }
+      .section-head { align-items: flex-start; flex-direction: column; }
+      .split-grid { grid-template-columns: 1fr; }
+      .custom-prices { grid-template-columns: 1fr; }
+      .date-range-fields { width: 100%; align-items: stretch; flex-direction: column; }
+      .date-range-fields label, .date-range-fields input { width: 100%; }
+      .balance-query { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>用量统计与版本管理</h1>
+  </header>
+  <main>
+    <section>
+      <div class="section-head">
+        <h2>Token 用量概览</h2>
+        <div class="controls">
+          <select id="dateRange" aria-label="统计时间范围">
+            <option value="today">今天</option>
+            <option value="7d">近 7 天</option>
+            <option value="30d" selected>近 30 天</option>
+            <option value="custom">自定义范围</option>
+          </select>
+          <div id="customDateRange" class="date-range-fields" hidden>
+            <label>开始<input id="customStartDate" type="date" aria-label="自定义开始日期" /></label>
+            <label>结束<input id="customEndDate" type="date" aria-label="自定义结束日期" /></label>
+            <button id="applyDateRange" class="primary">查询</button>
+          </div>
+          <select id="modelFilter" aria-label="筛选调用模型"><option value="all">全部模型</option></select>
+          <button id="refreshUsage">刷新统计</button>
+        </div>
+      </div>
+      <div class="balance-panel">
+        <div class="balance-head">
+          <div class="balance-title">DeepSeek API 账户余额</div>
+          <span id="balanceAvailability" class="balance-state">未查询</span>
+        </div>
+        <div id="balanceInfos" class="balance-grid">
+          <div class="balance-empty">输入 DeepSeek API Key 后可查询官方账户余额</div>
+        </div>
+        <div class="balance-query">
+          <input id="balanceApiKey" type="password" aria-label="DeepSeek API Key" placeholder="DeepSeek API Key（仅保留在当前窗口）" autocomplete="off" spellcheck="false" />
+          <button id="queryBalance" class="primary">查询余额</button>
+        </div>
+        <div id="balanceMeta" class="balance-meta">也可通过系统环境变量 DEEPSEEK_API_KEY 提供密钥；第三方中转服务余额不适用。</div>
+      </div>
+      <div class="cards">
+        <div class="card"><div class="label">模型调用</div><div id="requestCount" class="value">--</div></div>
+        <div class="card"><div class="label">实际总 Tokens</div><div id="totalTokens" class="value">--</div></div>
+        <div class="card"><div class="label">缓存命中率</div><div id="cacheHitRate" class="value">--</div></div>
+        <div class="card"><div class="label">涉及会话</div><div id="sessionCount" class="value">--</div></div>
+        <div class="card total"><div class="label">预估费用（人民币）</div><div id="estimated" class="value cost">--</div></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Token 分类</th><th>Tokens</th><th>单价（元/百万 tokens）</th><th>预估</th></tr></thead>
+          <tbody>
+            <tr><td>缓存命中输入</td><td id="cachedTable">--</td><td id="cachedRate">--</td><td id="cachedCost">--</td></tr>
+            <tr><td>缓存未命中输入（含缓存写入）</td><td id="uncachedTable">--</td><td id="uncachedRate">--</td><td id="uncachedCost">--</td></tr>
+            <tr><td>模型输出</td><td id="outputTable">--</td><td id="outputRate">--</td><td id="outputCost">--</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p id="usageMeta" class="hint"></p>
+    </section>
+
+    <section class="chart-section">
+      <div class="section-head">
+        <div>
+          <h2>Token 与费用趋势</h2>
+          <p class="hint" style="margin:4px 0 0">交互式双轴趋势 · 点击图例可隐藏系列 · 滚轮可缩放时间范围</p>
+        </div>
+        <span class="chart-badge">INTERACTIVE</span>
+      </div>
+      <div class="chart-wrap">
+        <div id="trendChart" role="img" aria-label="Token 与费用趋势图"></div>
+      </div>
+      <div class="chart-foot"><span>左轴：Tokens</span><span id="trendGranularity">今天按小时 · 其他范围按日期</span><span>右轴：人民币费用</span></div>
+    </section>
+
+    <section>
+      <div class="section-head"><h2>统计明细</h2></div>
+      <div class="split-grid">
+        <div class="subpanel">
+          <h3>模型统计</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Provider / 模型</th><th>调用</th><th>总 Tokens</th><th>缓存命中率</th><th>预估费用</th></tr></thead>
+              <tbody id="modelStatsBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="subpanel">
+          <div class="subpanel-head">
+            <h3>最近模型调用</h3>
+            <span id="recentRecordTotal" class="subpanel-note">共 0 条</span>
+          </div>
+          <div class="table-wrap recent-scroll">
+            <table>
+              <thead><tr><th>时间</th><th>模型</th><th>Tokens</th><th>预估费用</th></tr></thead>
+              <tbody id="recentBody"></tbody>
+            </table>
+          </div>
+          <div class="pagination">
+            <select id="recentPageSize" aria-label="最近调用每页数量">
+              <option value="10">每页 10 条</option>
+              <option value="20" selected>每页 20 条</option>
+              <option value="50">每页 50 条</option>
+              <option value="100">每页 100 条</option>
+            </select>
+            <div class="pagination-controls">
+              <button id="recentPrev" disabled>上一页</button>
+              <span id="recentPageInfo" class="page-info">第 1 / 1 页</span>
+              <button id="recentNext" disabled>下一页</button>
+            </div>
+          </div>
+        </div>
+        <div class="subpanel session-panel">
+          <div class="subpanel-head">
+            <h3>会话统计</h3>
+            <span class="subpanel-note">按总 Tokens 从高到低排列</span>
+          </div>
+          <div class="table-wrap session-scroll">
+            <table>
+              <thead><tr><th>会话</th><th>最近活跃</th><th>模型</th><th>调用</th><th>未命中输入</th><th>缓存命中</th><th>缓存写入</th><th>输出</th><th>总 Tokens</th><th>命中率</th><th>预估费用</th></tr></thead>
+              <tbody id="sessionStatsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <p class="hint">为保护隐私，本页只提取时间、Provider、模型和 Token 用量，不保存、不返回或展示提示词及回答正文。Harness 日志没有稳定的 HTTP 状态与延迟字段，因此不展示没有数据支撑的成功率或响应耗时。</p>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>费用估算设置</h2>
+        <button id="pricingDocs">查看官方定价</button>
+      </div>
+      <div class="controls" style="margin-bottom:16px">
+        <select id="priceModel" aria-label="未知模型的兜底估价模型">
+          <option value="deepseek-v4-flash">未知模型按 DeepSeek-V4-Flash-0731</option>
+          <option value="deepseek-v4-pro">未知模型按 DeepSeek-V4-Pro-0813</option>
+          <option value="deepseek-v4-flash-vision-exp">未知模型按 DeepSeek-V4-Flash-Vision-Exp</option>
+        </select>
+        <select id="priceTier" aria-label="价格时段或方案">
+          <option value="official-auto">官方价格（按调用时间自动）</option>
+          <option value="official-peak">全部按官方高峰时段</option>
+          <option value="official-offpeak">全部按官方空闲时段</option>
+          <option value="custom">自定义价格</option>
+        </select>
+      </div>
+      <div id="customPrices" class="custom-prices" hidden>
+        <label>缓存命中（元/百万）<input id="customHit" type="number" min="0" max="1000000" step="0.001" /></label>
+        <label>缓存未命中（元/百万）<input id="customMiss" type="number" min="0" max="1000000" step="0.001" /></label>
+        <label>输出（元/百万）<input id="customOutput" type="number" min="0" max="1000000" step="0.001" /></label>
+        <button id="saveCustom" class="primary">保存并计算</button>
+      </div>
+      <p class="hint">自动模式会根据每条调用记录的北京时间选择 09:00–12:00、14:00–18:00 高峰价，其余使用空闲价；同时按日志中的实际模型匹配价格。无法识别的模型才使用上面的兜底选项。估算值不等于官方账单，思考 tokens 已包含在输出中，不重复相加。</p>
+    </section>
+
+    <section>
+      <div class="section-head"><h2>Harness 版本切换</h2><button id="refreshVersions">刷新版本列表</button></div>
+      <div class="version-grid">
+        <div class="version-box"><div class="label">当前安装</div><div id="currentVersion" class="version-value">检测中…</div></div>
+        <div class="version-box"><div class="label">官方 latest</div><div id="latestVersion" class="version-value">查询中…</div></div>
+      </div>
+      <div class="install-row">
+        <select id="versionSelect" aria-label="选择 Harness 版本" disabled><option>正在获取官方版本列表…</option></select>
+        <button id="installVersion" class="primary" disabled>安装所选版本</button>
+      </div>
+      <p id="operation"></p>
+      <p class="hint">版本来自官方 npm 包 <code>@deepseek-ai/dsh</code>。可以升级、重装或回退；切换时桌面壳会停止当前服务，安装完成后自动重启。</p>
+    </section>
+  </main>
+  <script src="vendor/echarts.min.js"></script>
+  <script>
+    const ids = [
+      'dateRange', 'customDateRange', 'customStartDate', 'customEndDate', 'applyDateRange', 'modelFilter', 'balanceAvailability', 'balanceInfos', 'balanceApiKey', 'queryBalance', 'balanceMeta', 'priceModel', 'priceTier', 'customPrices', 'customHit',
+      'customMiss', 'customOutput', 'saveCustom', 'refreshUsage', 'pricingDocs', 'requestCount',
+      'totalTokens', 'cacheHitRate', 'sessionCount', 'estimated', 'cachedTable', 'cachedRate',
+      'cachedCost', 'uncachedTable', 'uncachedRate', 'uncachedCost', 'outputTable', 'outputRate',
+      'outputCost', 'usageMeta', 'trendChart', 'trendGranularity', 'modelStatsBody', 'recentBody', 'recentRecordTotal', 'recentPageSize', 'recentPrev', 'recentNext', 'recentPageInfo', 'sessionStatsBody', 'refreshVersions',
+      'currentVersion', 'latestVersion', 'versionSelect', 'installVersion', 'operation',
+    ];
+    const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
+    const tokenFormatter = new Intl.NumberFormat('zh-CN');
+    const pricingStorageKey = 'dsh-desktop-pricing-v2';
+    let trendChart = null;
+    let recentPage = 1;
+    let recentPageCount = 1;
+
+    function tokens(value) { return tokenFormatter.format(value || 0); }
+    function money(value) {
+      if (!Number.isFinite(value) || value <= 0) return '¥0.0000';
+      if (value < 0.0001) return '< ¥0.0001';
+      return `¥${value.toFixed(value < 1 ? 4 : 2)}`;
+    }
+    function percent(value) { return `${((value || 0) * 100).toFixed(1)}%`; }
+    function setOperation(message, kind = '') { el.operation.textContent = message; el.operation.className = kind; }
+    function balanceMoney(value, currency) {
+      const amount = Number(value);
+      if (!Number.isFinite(amount)) return `${currency} 0`;
+      try { return new Intl.NumberFormat('zh-CN', { style: 'currency', currency }).format(amount); }
+      catch { return `${currency} ${amount.toFixed(2)}`; }
+    }
+    function appendCell(row, value, options = {}) {
+      const cell = document.createElement('td');
+      cell.textContent = value;
+      if (options.className) cell.className = options.className;
+      if (options.title) cell.title = options.title;
+      row.append(cell);
+      return cell;
+    }
+    function emptyTable(body, colspan, message) {
+      body.replaceChildren();
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = colspan;
+      cell.className = 'empty-row';
+      cell.textContent = message;
+      row.append(cell);
+      body.append(row);
+    }
+
+    function renderBalance(result) {
+      el.balanceInfos.replaceChildren();
+      if (!result.ok) {
+        el.balanceAvailability.textContent = result.code === 'missing-key' ? '需要 API Key' : '查询失败';
+        el.balanceAvailability.className = result.code === 'missing-key' ? 'balance-state' : 'balance-state error';
+        const empty = document.createElement('div');
+        empty.className = 'balance-empty';
+        empty.textContent = result.error || '余额查询失败';
+        el.balanceInfos.append(empty);
+        el.balanceMeta.textContent = 'API Key 不会写入本地存储；第三方中转服务余额不适用。';
+        return;
+      }
+      el.balanceAvailability.textContent = result.isAvailable ? '账户可用' : '余额不足';
+      el.balanceAvailability.className = result.isAvailable ? 'balance-state ok' : 'balance-state error';
+      if (!result.balanceInfos.length) {
+        const empty = document.createElement('div');
+        empty.className = 'balance-empty';
+        empty.textContent = '官方接口未返回币种余额明细';
+        el.balanceInfos.append(empty);
+      }
+      for (const info of result.balanceInfos) {
+        const card = document.createElement('div');
+        card.className = 'balance-card';
+        const head = document.createElement('div');
+        head.className = 'balance-card-head';
+        const label = document.createElement('span');
+        label.textContent = `${info.currency} 剩余余额`;
+        const source = document.createElement('span');
+        source.textContent = '官方账户';
+        head.append(label, source);
+        const amount = document.createElement('div');
+        amount.className = 'balance-amount';
+        amount.textContent = balanceMoney(info.totalBalance, info.currency);
+        const parts = document.createElement('div');
+        parts.className = 'balance-parts';
+        const toppedUp = document.createElement('span');
+        toppedUp.textContent = `充值 ${balanceMoney(info.toppedUpBalance, info.currency)}`;
+        const granted = document.createElement('span');
+        granted.textContent = `赠送 ${balanceMoney(info.grantedBalance, info.currency)}`;
+        parts.append(toppedUp, granted);
+        card.append(head, amount, parts);
+        el.balanceInfos.append(card);
+      }
+      const queriedAt = result.queriedAt ? new Date(result.queriedAt).toLocaleString('zh-CN') : '刚刚';
+      const sourceLabel = result.keySource === 'environment' ? '系统环境变量' : '当前窗口输入';
+      el.balanceMeta.textContent = `查询时间 ${queriedAt} · 密钥来源：${sourceLabel} · 密钥未写入本地存储`;
+    }
+    async function refreshBalance() {
+      el.queryBalance.disabled = true;
+      el.queryBalance.textContent = '正在查询…';
+      el.balanceAvailability.textContent = '查询中';
+      el.balanceAvailability.className = 'balance-state';
+      try {
+        const apiKey = el.balanceApiKey.value.trim();
+        renderBalance(await window.dshApp.getBalance(apiKey || undefined));
+      } catch {
+        renderBalance({ ok: false, code: 'network', error: '余额查询功能暂时不可用' });
+      } finally {
+        el.queryBalance.disabled = false;
+        el.queryBalance.textContent = '查询余额';
+      }
+    }
+
+    function readSavedPricing() {
+      const fallback = {
+        model: 'deepseek-v4-flash',
+        tier: 'official-auto',
+        customPrices: { cacheHitPerMillionCny: 0.1, cacheMissPerMillionCny: 3, outputPerMillionCny: 9 },
+      };
+      try {
+        const parsed = JSON.parse(localStorage.getItem(pricingStorageKey) || 'null');
+        if (!parsed || typeof parsed !== 'object') return fallback;
+        return { ...fallback, ...parsed, customPrices: { ...fallback.customPrices, ...parsed.customPrices } };
+      } catch { return fallback; }
+    }
+    function customPriceValues() {
+      return {
+        cacheHitPerMillionCny: Number(el.customHit.value),
+        cacheMissPerMillionCny: Number(el.customMiss.value),
+        outputPerMillionCny: Number(el.customOutput.value),
+      };
+    }
+    function currentPricing() { return { model: el.priceModel.value, tier: el.priceTier.value, customPrices: customPriceValues() }; }
+    function savePricing() {
+      const pricing = currentPricing();
+      try { localStorage.setItem(pricingStorageKey, JSON.stringify(pricing)); } catch { /* 当前计算仍可继续 */ }
+      return pricing;
+    }
+    function showCustomPrices() { el.customPrices.hidden = el.priceTier.value !== 'custom'; }
+    function localDateValue(date) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+    function showCustomDateRange() { el.customDateRange.hidden = el.dateRange.value !== 'custom'; }
+    function usageDateRequest() {
+      const request = { range: el.dateRange.value };
+      if (request.range !== 'custom') return request;
+      if (!el.customStartDate.value || !el.customEndDate.value) throw new Error('请选择开始日期和结束日期');
+      if (el.customStartDate.value > el.customEndDate.value) throw new Error('开始日期不能晚于结束日期');
+      return { ...request, startDate: el.customStartDate.value, endDate: el.customEndDate.value };
+    }
+
+    function compactNumber(value) {
+      if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+      if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1)}k`;
+      return String(Math.round(value));
+    }
+    function renderTrend(points) {
+      if (!window.echarts) {
+        el.trendChart.textContent = '图表组件加载失败，请重新安装桌面应用。';
+        return;
+      }
+      if (!trendChart) trendChart = window.echarts.init(el.trendChart, null, { renderer: 'canvas' });
+      const seriesConfig = [
+        { name: '未命中输入', field: 'uncachedInputTokens', color: '#3694ff' },
+        { name: '缓存创建', field: 'cacheWriteTokens', color: '#ff9f43' },
+        { name: '缓存命中', field: 'cacheReadTokens', color: '#9b5cff', area: true },
+        { name: '输出', field: 'outputTokens', color: '#25d07f' },
+      ];
+      const hasData = points.some((point) => point.requestCount > 0 || point.totalTokens > 0);
+      const option = {
+        animationDuration: 900,
+        animationEasing: 'cubicInOut',
+        color: [...seriesConfig.map((item) => item.color), '#ff4f72'],
+        grid: { left: 72, right: 76, top: 42, bottom: 68, containLabel: false },
+        legend: {
+          bottom: 18,
+          left: 'center',
+          itemWidth: 18,
+          itemHeight: 3,
+          itemGap: 24,
+          icon: 'roundRect',
+          textStyle: { color: '#aeb7c8', fontSize: 12 },
+          data: [...seriesConfig.map((item) => item.name), '预估费用'],
+        },
+        tooltip: {
+          trigger: 'axis',
+          confine: true,
+          backgroundColor: 'rgba(18,20,28,.96)',
+          borderColor: 'rgba(141,112,255,.5)',
+          borderWidth: 1,
+          padding: [11, 13],
+          textStyle: { color: '#eef4ff', fontSize: 12 },
+          axisPointer: { type: 'line', lineStyle: { color: 'rgba(153,164,190,.42)', type: 'dashed' } },
+          formatter(params) {
+            const index = params[0]?.dataIndex ?? 0;
+            const point = points[index];
+            const rows = params.map((item) => {
+              const value = item.seriesName === '预估费用' ? money(item.value) : `${tokens(item.value)} tokens`;
+              return `<div style="display:flex;justify-content:space-between;gap:28px;margin-top:7px"><span>${item.marker}${item.seriesName}</span><b>${value}</b></div>`;
+            }).join('');
+            return `<div style="font-weight:700;margin-bottom:2px">${point?.label || ''}</div>${rows}<div style="margin-top:9px;padding-top:8px;border-top:1px solid rgba(255,255,255,.1);color:#909aae">模型调用 ${tokens(point?.requestCount || 0)} 次</div>`;
+          },
+        },
+        xAxis: {
+          type: 'category',
+          boundaryGap: false,
+          data: points.map((point) => point.label),
+          axisLine: { lineStyle: { color: '#343945' } },
+          axisTick: { show: false },
+          axisLabel: {
+            color: '#858fa3',
+            fontSize: 11,
+            hideOverlap: true,
+            margin: 14,
+            interval: points.length > 24 ? 4 : points.length > 12 ? 2 : 0,
+          },
+        },
+        yAxis: [
+          {
+            type: 'value',
+            min: 0,
+            splitNumber: 4,
+            axisLabel: { color: '#8993a7', fontSize: 11, formatter: compactNumber },
+            axisLine: { show: false },
+            axisTick: { show: false },
+            splitLine: { lineStyle: { color: 'rgba(130,142,168,.12)', type: 'dashed' } },
+          },
+          {
+            type: 'value',
+            min: 0,
+            splitNumber: 4,
+            axisLabel: { color: '#ff6b86', fontSize: 11, formatter: (value) => `¥${value < 1 ? value.toFixed(2) : value.toFixed(0)}` },
+            axisLine: { show: false },
+            axisTick: { show: false },
+            splitLine: { show: false },
+          },
+        ],
+        dataZoom: [{ type: 'inside', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true }],
+        graphic: hasData ? [] : [{
+          type: 'text', left: 'center', top: 'middle',
+          style: { text: '当前筛选范围暂无调用数据', fill: '#727d92', fontSize: 13 },
+        }],
+        series: [
+          ...seriesConfig.map((item) => ({
+            name: item.name,
+            type: 'line',
+            yAxisIndex: 0,
+            data: points.map((point) => point[item.field]),
+            smooth: .58,
+            smoothMonotone: 'x',
+            showSymbol: false,
+            symbol: 'circle',
+            symbolSize: 8,
+            emphasis: { focus: 'series', scale: 1.5 },
+            lineStyle: {
+              width: item.area ? 3 : 2.2,
+              color: item.color,
+              cap: 'round',
+              join: 'round',
+              shadowBlur: item.area ? 20 : 11,
+              shadowColor: `${item.color}88`,
+            },
+            itemStyle: { color: item.color, borderColor: '#181b23', borderWidth: 2 },
+            areaStyle: item.area ? {
+              opacity: 1,
+              color: new window.echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                { offset: 0, color: 'rgba(155,92,255,.34)' },
+                { offset: .62, color: 'rgba(155,92,255,.08)' },
+                { offset: 1, color: 'rgba(155,92,255,0)' },
+              ]),
+            } : undefined,
+          })),
+          {
+            name: '预估费用',
+            type: 'line',
+            yAxisIndex: 1,
+            data: points.map((point) => point.estimatedCny),
+            smooth: .55,
+            smoothMonotone: 'x',
+            showSymbol: false,
+            symbol: 'circle',
+            symbolSize: 8,
+            z: 10,
+            lineStyle: {
+              width: 2.4,
+              type: [8, 6],
+              cap: 'round',
+              join: 'round',
+              color: '#ff4f72',
+              shadowBlur: 16,
+              shadowColor: 'rgba(255,79,114,.75)',
+            },
+            itemStyle: { color: '#ff4f72', borderColor: '#181b23', borderWidth: 2 },
+          },
+        ],
+      };
+      trendChart.setOption(option, { notMerge: true });
+    }
+
+    function renderModelStats(stats) {
+      if (!stats.length) return emptyTable(el.modelStatsBody, 5, '当前筛选范围暂无模型调用');
+      el.modelStatsBody.replaceChildren();
+      for (const stat of stats) {
+        const row = document.createElement('tr');
+        const prompt = stat.uncachedInputTokens + stat.cacheReadTokens + stat.cacheWriteTokens;
+        appendCell(row, `${stat.provider} / ${stat.model}`);
+        appendCell(row, tokens(stat.requestCount));
+        appendCell(row, tokens(stat.totalTokens));
+        appendCell(row, percent(prompt > 0 ? stat.cacheReadTokens / prompt : 0));
+        appendCell(row, money(stat.estimatedCny));
+        el.modelStatsBody.append(row);
+      }
+    }
+    function updateRecentPager() {
+      el.recentRecordTotal.textContent = `共 ${tokens(Number(el.recentRecordTotal.dataset.total) || 0)} 条`;
+      el.recentPageInfo.textContent = `第 ${recentPage} / ${recentPageCount} 页`;
+      el.recentPrev.disabled = recentPage <= 1;
+      el.recentNext.disabled = recentPage >= recentPageCount;
+    }
+    function renderRecent(records, summary) {
+      recentPage = summary.recentPage;
+      recentPageCount = summary.recentPageCount;
+      el.recentPageSize.value = String(summary.recentPageSize);
+      el.recentRecordTotal.dataset.total = String(summary.recentRecordTotal);
+      updateRecentPager();
+      if (!records.length) return emptyTable(el.recentBody, 4, '当前筛选范围暂无调用记录');
+      el.recentBody.replaceChildren();
+      for (const record of records) {
+        const row = document.createElement('tr');
+        const total = record.uncachedInputTokens + record.cacheReadTokens + record.cacheWriteTokens + record.outputTokens;
+        appendCell(row, new Date(record.time).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }));
+        appendCell(row, record.model);
+        appendCell(row, tokens(total));
+        appendCell(row, money(record.estimatedCny));
+        el.recentBody.append(row);
+      }
+    }
+    function shortSessionId(sessionId) {
+      if (!sessionId || sessionId === 'unknown') return '未知会话';
+      if (sessionId.length <= 16) return sessionId;
+      return `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}`;
+    }
+    function renderSessionStats(stats) {
+      if (!stats.length) return emptyTable(el.sessionStatsBody, 11, '当前筛选范围暂无会话用量');
+      el.sessionStatsBody.replaceChildren();
+      const maxTokens = Math.max(1, ...stats.map((stat) => stat.totalTokens));
+      for (const stat of stats) {
+        const row = document.createElement('tr');
+        const prompt = stat.uncachedInputTokens + stat.cacheReadTokens + stat.cacheWriteTokens;
+        appendCell(row, shortSessionId(stat.sessionId), { className: 'session-id', title: stat.sessionId });
+        appendCell(row, new Date(stat.lastActiveAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }));
+        appendCell(row, stat.models.join('、') || '未标注', { className: 'session-models', title: stat.models.join('、') });
+        appendCell(row, tokens(stat.requestCount));
+        appendCell(row, tokens(stat.uncachedInputTokens));
+        appendCell(row, tokens(stat.cacheReadTokens));
+        appendCell(row, tokens(stat.cacheWriteTokens));
+        appendCell(row, tokens(stat.outputTokens));
+        const totalCell = appendCell(row, tokens(stat.totalTokens));
+        const share = document.createElement('div');
+        share.className = 'token-share';
+        const fill = document.createElement('i');
+        fill.style.width = `${Math.max(2, stat.totalTokens / maxTokens * 100)}%`;
+        share.append(fill);
+        totalCell.append(share);
+        appendCell(row, percent(prompt > 0 ? stat.cacheReadTokens / prompt : 0));
+        appendCell(row, money(stat.estimatedCny));
+        el.sessionStatsBody.append(row);
+      }
+    }
+    function updateModelFilter(summary) {
+      const selected = summary.modelFilter || 'all';
+      el.modelFilter.replaceChildren();
+      const all = document.createElement('option');
+      all.value = 'all'; all.textContent = '全部模型'; el.modelFilter.append(all);
+      for (const item of summary.availableModels) {
+        const option = document.createElement('option');
+        option.value = item.key;
+        option.textContent = `${item.provider} / ${item.model}`;
+        el.modelFilter.append(option);
+      }
+      el.modelFilter.value = selected;
+    }
+    function renderUsage(summary) {
+      const t = summary.totals;
+      el.requestCount.textContent = tokens(summary.requestCount);
+      el.totalTokens.textContent = tokens(summary.totalTokens);
+      el.cacheHitRate.textContent = percent(summary.cacheHitRate);
+      el.sessionCount.textContent = tokens(summary.sessionCount);
+      el.estimated.textContent = money(summary.estimatedCny);
+      el.cachedTable.textContent = tokens(t.cacheReadTokens);
+      el.uncachedTable.textContent = tokens(t.uncachedInputTokens + t.cacheWriteTokens);
+      el.outputTable.textContent = tokens(t.outputTokens);
+      const rateLabel = summary.priceTier === 'custom' ? null : '按模型/时段';
+      el.cachedRate.textContent = rateLabel || summary.prices.cacheHitPerMillionCny;
+      el.uncachedRate.textContent = rateLabel || summary.prices.cacheMissPerMillionCny;
+      el.outputRate.textContent = rateLabel || summary.prices.outputPerMillionCny;
+      el.cachedCost.textContent = money(summary.estimatedBreakdown.cacheHitCny);
+      el.uncachedCost.textContent = money(summary.estimatedBreakdown.cacheMissCny);
+      el.outputCost.textContent = money(summary.estimatedBreakdown.outputCny);
+      updateModelFilter(summary);
+      renderTrend(summary.trend);
+      renderModelStats(summary.modelStats);
+      renderRecent(summary.recentRecords, summary);
+      renderSessionStats(summary.sessionStats);
+      el.trendGranularity.textContent = summary.range === 'today'
+        ? '当前日期按小时聚合'
+        : `${summary.startDate} 至 ${summary.endDate} · 按日期聚合`;
+      const updated = summary.updatedAt ? new Date(summary.updatedAt).toLocaleString('zh-CN') : '暂无数据';
+      const skipped = summary.skippedFileCount ? ` · ${summary.skippedFileCount} 个日志暂时无法读取` : '';
+      const fallback = summary.fallbackPriceCount ? ` · ${summary.fallbackPriceCount} 次未知模型按 ${summary.priceLabel} 估价` : '';
+      el.usageMeta.textContent = summary.sourceFound
+        ? `已扫描 ${summary.scannedFileCount} 个本机会话日志 · ${summary.priceTierLabel} · 数据更新时间 ${updated}${fallback}${skipped} · 官方价格核对日期 ${summary.priceVerifiedOn}`
+        : '未找到 Harness 会话日志。请先完成至少一次模型对话，或安装较新的 Harness 版本。';
+    }
+    async function refreshUsage() {
+      el.refreshUsage.disabled = true;
+      el.applyDateRange.disabled = true;
+      el.recentPageSize.disabled = true;
+      el.recentPrev.disabled = true;
+      el.recentNext.disabled = true;
+      try {
+        const dateRequest = usageDateRequest();
+        const summary = await window.dshApp.getUsage({
+          ...dateRequest,
+          modelFilter: el.modelFilter.value,
+          recentPage,
+          recentPageSize: Number(el.recentPageSize.value),
+          pricing: currentPricing(),
+        });
+        renderUsage(summary);
+      } catch (error) { el.usageMeta.textContent = `统计读取失败：${error.message}`; }
+      finally {
+        el.refreshUsage.disabled = false;
+        el.applyDateRange.disabled = false;
+        el.recentPageSize.disabled = false;
+        updateRecentPager();
+      }
+    }
+    function refreshUsageFromFirstPage() { recentPage = 1; return refreshUsage(); }
+
+    async function refreshVersions() {
+      el.refreshVersions.disabled = true;
+      el.versionSelect.disabled = true;
+      el.installVersion.disabled = true;
+      setOperation('正在从官方 npm 查询版本列表…');
+      try {
+        const info = await window.dshApp.getDshVersions();
+        el.currentVersion.textContent = info.current || '未安装';
+        el.latestVersion.textContent = info.latest || '查询失败';
+        el.versionSelect.innerHTML = '';
+        const latestOption = document.createElement('option');
+        latestOption.value = 'latest';
+        latestOption.textContent = info.latest ? `最新版 latest（${info.latest}）` : '最新版 latest';
+        el.versionSelect.append(latestOption);
+        for (const version of info.versions) {
+          const option = document.createElement('option');
+          option.value = version;
+          option.textContent = version === info.current ? `${version}（当前）` : version;
+          el.versionSelect.append(option);
+        }
+        el.versionSelect.disabled = false;
+        el.installVersion.disabled = false;
+        setOperation(info.versions.length > 0 ? `已获取 ${info.versions.length} 个官方版本` : '未能获取版本列表，仍可尝试安装 latest', info.versions.length > 0 ? 'ok' : 'error');
+      } catch (error) { setOperation(`版本列表读取失败：${error.message}`, 'error'); }
+      finally { el.refreshVersions.disabled = false; }
+    }
+
+    let installing = false;
+    el.installVersion.onclick = async () => {
+      if (installing) {
+        el.installVersion.disabled = true;
+        el.installVersion.textContent = '正在取消…';
+        await window.dshApp.cancelDshUpdate();
+        return;
+      }
+      installing = true;
+      el.versionSelect.disabled = true;
+      el.installVersion.textContent = '取消安装';
+      const target = el.versionSelect.value;
+      const result = await window.dshApp.updateDsh(target);
+      installing = false;
+      el.installVersion.disabled = false;
+      el.installVersion.textContent = '安装所选版本';
+      if (result.ok) {
+        setOperation(`Harness ${result.version || target} 安装并启动成功`, 'ok');
+        await refreshVersions();
+        await refreshUsage();
+      } else {
+        el.versionSelect.disabled = false;
+        setOperation(`安装失败：${result.error || '未知错误'}`, 'error');
+      }
+    };
+    el.refreshVersions.onclick = refreshVersions;
+    el.refreshUsage.onclick = refreshUsage;
+    el.queryBalance.onclick = refreshBalance;
+    el.balanceApiKey.onkeydown = (event) => { if (event.key === 'Enter') refreshBalance(); };
+    el.dateRange.onchange = () => {
+      showCustomDateRange();
+      if (el.dateRange.value !== 'custom') refreshUsageFromFirstPage();
+    };
+    el.applyDateRange.onclick = refreshUsageFromFirstPage;
+    el.modelFilter.onchange = refreshUsageFromFirstPage;
+    el.recentPageSize.onchange = refreshUsageFromFirstPage;
+    el.recentPrev.onclick = () => { if (recentPage > 1) { recentPage -= 1; refreshUsage(); } };
+    el.recentNext.onclick = () => { if (recentPage < recentPageCount) { recentPage += 1; refreshUsage(); } };
+    el.priceModel.onchange = () => { savePricing(); refreshUsageFromFirstPage(); };
+    el.priceTier.onchange = () => { showCustomPrices(); savePricing(); refreshUsageFromFirstPage(); };
+    el.saveCustom.onclick = () => {
+      const values = customPriceValues();
+      if (Object.values(values).some((value) => !Number.isFinite(value) || value < 0 || value > 1000000)) {
+        el.usageMeta.textContent = '自定义价格必须是 0 至 1000000 之间的数字';
+        return;
+      }
+      savePricing(); refreshUsageFromFirstPage();
+    };
+    el.pricingDocs.onclick = () => window.dshApp.openPricingDocs();
+    window.dshApp?.onOperationStatus?.((event) => setOperation(event.message, event.kind || ''));
+    const savedPricing = readSavedPricing();
+    el.priceModel.value = savedPricing.model;
+    el.priceTier.value = savedPricing.tier;
+    el.customHit.value = savedPricing.customPrices.cacheHitPerMillionCny;
+    el.customMiss.value = savedPricing.customPrices.cacheMissPerMillionCny;
+    el.customOutput.value = savedPricing.customPrices.outputPerMillionCny;
+    showCustomPrices();
+    const today = new Date();
+    const defaultStart = new Date(today);
+    defaultStart.setDate(defaultStart.getDate() - 29);
+    el.customStartDate.value = localDateValue(defaultStart);
+    el.customEndDate.value = localDateValue(today);
+    el.customStartDate.max = el.customEndDate.max = localDateValue(today);
+    showCustomDateRange();
+    const chartResizeObserver = new ResizeObserver(() => trendChart?.resize());
+    chartResizeObserver.observe(el.trendChart);
+    window.addEventListener('beforeunload', () => {
+      chartResizeObserver.disconnect();
+      trendChart?.dispose();
+      trendChart = null;
+    });
+    Promise.all([refreshUsage(), refreshVersions(), refreshBalance()]);
+  </script>
+</body>
+</html>

@@ -1,19 +1,20 @@
 {
   "name": "dsh-desktop",
-  "version": "0.1.0",
-  "description": "DeepSeek Harness (dsh) 的 Windows 桌面套壳:轻量壳 + 首次引导 + 托盘驻留",
+  "version": "0.4.5",
+  "description": "DeepSeek Harness (dsh) Windows 桌面套壳:一键启动、更新与重启",
   "main": "dist/main/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clean-dist.ps1 && tsc",
     "start": "npm run build && electron .",
     "test": "vitest run",
-    "dist": "npm run build && electron-builder --win",
+    "dist": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clean-package-output.ps1 && electron-builder --win",
     "icon": "powershell -ExecutionPolicy Bypass -File scripts/gen-icon.ps1"
   },
   "author": "zhangsheng",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "echarts": "6.1.0",
     "electron": "^43.4.0",
     "electron-builder": "^26.15.3",
     "typescript": "^7.0.2",

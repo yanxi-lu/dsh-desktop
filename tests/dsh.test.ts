@@ -3,7 +3,24 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { resolveDshCommand, detectNode, detectDsh, detectAll, startDsh, waitForReady, killTree } from '../src/main/dsh';
+import {
+  resolveDshCommand,
+  resolveNpmCommand,
+  parseVersionOutput,
+  getDshVersion,
+  getLatestDshVersion,
+  getDshVersions,
+  parsePublishedDshVersions,
+  normalizeDshTargetVersion,
+  describeNpmProgressLine,
+  updateDsh,
+  detectNode,
+  detectDsh,
+  detectAll,
+  startDsh,
+  waitForReady,
+  killTree,
+} from '../src/main/dsh';
 
 // R20 真机回归:mock node:child_process,锁定默认探测的 shell 行为与命令引号化。
 // execFile 需按回调约定在最后一个参数回调成功,供 promisify 解析。
@@ -154,6 +171,99 @@ describe('detectAll', () => {
   });
 });
 
+describe('版本读取与一键更新', () => {
+  it('从常见 dsh -V 输出中提取语义版本', () => {
+    expect(parseVersionOutput('0.1.0-rc.7\n')).toBe('0.1.0-rc.7');
+    expect(parseVersionOutput('dsh/1.2.3 win32-x64')).toBe('1.2.3');
+    expect(parseVersionOutput('', 'dsh version unknown')).toBe('dsh version unknown');
+    expect(parseVersionOutput('')).toBeNull();
+  });
+
+  it('getDshVersion 使用解析到的命令执行 -V', async () => {
+    const execFn = vi.fn(async () => ({ stdout: 'dsh/0.1.0-rc.7\n', stderr: '' }));
+    const version = await getDshVersion(
+      {},
+      async () => ['C:\\tools\\dsh.cmd'],
+      execFn,
+    );
+    expect(version).toBe('0.1.0-rc.7');
+    expect(execFn).toHaveBeenCalledWith('C:\\tools\\dsh.cmd', ['-V']);
+  });
+
+  it('npm 解析优先使用 .cmd,更新后返回实际 dsh 版本', async () => {
+    const whereFn = vi.fn(async (cmd: string) => (
+      cmd === 'npm'
+        ? ['E:\\nodejs\\npm', 'E:\\nodejs\\npm.cmd']
+        : ['E:\\nodejs\\dsh.cmd']
+    ));
+    expect(await resolveNpmCommand({}, whereFn)).toBe('E:\\nodejs\\npm.cmd');
+
+    const execFn = vi.fn(async (cmd: string, args: string[]) => {
+      if (cmd.endsWith('dsh.cmd') && args[0] === '-V') {
+        return { stdout: '0.1.0-rc.7', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    const version = await updateDsh({}, whereFn, execFn);
+    expect(version).toBe('0.1.0-rc.7');
+    expect(execFn).toHaveBeenCalledWith(
+      'E:\\nodejs\\npm.cmd',
+      ['install', '-g', '@deepseek-ai/dsh@latest'],
+    );
+  });
+
+  it('从官方 npm latest dist-tag 查询最新版', async () => {
+    const execFn = vi.fn(async () => ({ stdout: '"0.2.0-rc.1"\n', stderr: '' }));
+    const latest = await getLatestDshVersion(
+      {},
+      async () => ['E:\\nodejs\\npm.cmd'],
+      execFn,
+    );
+    expect(latest).toBe('0.2.0-rc.1');
+    expect(execFn).toHaveBeenCalledWith(
+      'E:\\nodejs\\npm.cmd',
+      ['view', '@deepseek-ai/dsh@latest', 'version', '--json'],
+    );
+  });
+
+  it('解析、过滤并按新到旧展示官方版本列表', async () => {
+    const output = JSON.stringify([
+      '0.1.0-rc.7', 'bad --flag', '0.1.1-rc.2', '0.1.0-rc.10', '0.1.0-rc.7',
+    ]);
+    expect(parsePublishedDshVersions(output)).toEqual([
+      '0.1.1-rc.2', '0.1.0-rc.10', '0.1.0-rc.7',
+    ]);
+    const execFn = vi.fn(async () => ({ stdout: output, stderr: '' }));
+    expect(await getDshVersions({}, async () => ['E:\\nodejs\\npm.cmd'], execFn))
+      .toEqual(['0.1.1-rc.2', '0.1.0-rc.10', '0.1.0-rc.7']);
+    expect(execFn).toHaveBeenCalledWith(
+      'E:\\nodejs\\npm.cmd',
+      ['view', '@deepseek-ai/dsh', 'versions', '--json'],
+    );
+  });
+
+  it('目标版本只接受 latest 或完整语义版本', () => {
+    expect(normalizeDshTargetVersion(undefined)).toBe('latest');
+    expect(normalizeDshTargetVersion('0.1.1-rc.2')).toBe('0.1.1-rc.2');
+    expect(() => normalizeDshTargetVersion('--registry=https://bad.example')).toThrow(/版本格式/);
+  });
+
+  it('找不到 npm 时给出明确错误', async () => {
+    await expect(updateDsh({}, async () => [], async () => ({ stdout: '', stderr: '' })))
+      .rejects.toThrow(/npm/i);
+  });
+
+  it('把 npm 流式日志转换为可见安装进度', () => {
+    expect(describeNpmProgressLine('npm http fetch GET 200 https://registry.example/pkg', 9))
+      .toEqual({ message: '正在下载官方 Harness 组件…已完成 10 项', downloaded: 10 });
+    expect(describeNpmProgressLine('npm info run node-pty@1.0.0 install', 10))
+      .toEqual({ message: '组件已下载,正在执行本地安装脚本…', downloaded: 10 });
+    expect(describeNpmProgressLine('added 123 packages in 2m', 10))
+      .toEqual({ message: '依赖安装完成,共处理 123 个包', downloaded: 10 });
+    expect(describeNpmProgressLine('npm warn deprecated old-package', 10)).toBeNull();
+  });
+});
+
 // 测试用 spawn 替身:记录调用参数,返回一个假进程对象
 function fakeProc() {
   const emitter = new EventEmitter();
@@ -166,7 +276,7 @@ describe('startDsh', () => {
     const spawnFn = vi.fn(async () => proc);
     const env = { DSH_BIN: 'C:\\tools\\dsh.cmd' };
     const r = await startDsh(env, spawnFn);
-    expect(spawnFn).toHaveBeenCalledWith('C:\\tools\\dsh.cmd', ['web'], { shell: true, windowsHide: true, env });
+    expect(spawnFn).toHaveBeenCalledWith('C:\\tools\\dsh.cmd', ['web', '--no-open'], { shell: true, windowsHide: true, env });
     expect(r.url).toBe('http://127.0.0.1:3080');
     expect(r.proc.pid).toBe(4242);
   });
@@ -195,7 +305,7 @@ describe('defaultSpawn(默认 spawn,R21)', () => {
       { shell: boolean; windowsHide: boolean },
     ];
     expect(cmdArg).toBe('"C:\\Program Files\\dsh\\dsh.cmd"');
-    expect(argsArg).toEqual(['web']);
+    expect(argsArg).toEqual(['web', '--no-open']);
     expect(optsArg).toMatchObject({ shell: true, windowsHide: true });
   });
 
@@ -212,7 +322,7 @@ describe('defaultSpawn(默认 spawn,R21)', () => {
       { shell: boolean; windowsHide: boolean },
     ];
     expect(cmdArg).toBe('"E:\\nodejs\\dsh.cmd"');
-    expect(argsArg).toEqual(['web']);
+    expect(argsArg).toEqual(['web', '--no-open']);
     expect(optsArg).toMatchObject({ shell: true, windowsHide: true });
   });
 });

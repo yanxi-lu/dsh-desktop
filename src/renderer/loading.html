@@ -22,6 +22,9 @@
   <p id="error"></p>
   <button id="retry">重试</button>
   <script>
+    window.dshApp.onOperationStatus((event) => {
+      document.getElementById('status').textContent = event.message;
+    });
     window.dshApp.onError((msg) => {
       document.querySelector('.spinner').style.display = 'none';
       document.getElementById('status').textContent = '启动失败';

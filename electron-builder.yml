@@ -2,6 +2,8 @@ appId: com.zhangsheng.dsh-desktop
 productName: dsh-desktop
 directories:
   output: release
+# 桌面壳不从任何第三方仓库更新;这里只更新官方 Harness npm 包。
+publish: null
 files:
   - dist/**
   - src/renderer/**
@@ -17,8 +19,10 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
-  createDesktopShortcut: true
+  # 首次安装及后续自动更新后都确保保留桌面一键启动图标
+  createDesktopShortcut: always
   createStartMenuShortcut: true
-  shortcutName: dsh-desktop
+  shortcutName: DeepSeek Harness
+  runAfterFinish: true
   # 产物名固定为 dsh-desktop-setup-<版本>.exe(electron-builder 26 默认带空格,不符合验收要求)
   artifactName: ${name}-setup-${version}.${ext}

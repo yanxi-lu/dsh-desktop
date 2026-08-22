@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DeepSeek Harness Desktop</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+    body {
+      color: #10223f;
+      background: #f6f9ff;
+      font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      user-select: none;
+    }
+    #toolbar {
+      height: 58px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 12px;
+      border-bottom: 1px solid #dbe5f3;
+      background: linear-gradient(100deg, #f9fbff 0%, #eef5ff 100%);
+    }
+    .brand { display: flex; align-items: center; min-width: 252px; gap: 10px; }
+    .brand img { width: 36px; height: 36px; border-radius: 10px; }
+    .brand-name { font-size: 14px; font-weight: 700; line-height: 1.2; }
+    .versions { margin-top: 3px; color: #6680a2; font-size: 11px; white-space: nowrap; }
+    #status {
+      flex: 1;
+      min-width: 120px;
+      overflow: hidden;
+      color: #536b8c;
+      font-size: 12px;
+      text-align: right;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #status.busy { color: #1769d2; }
+    #status.ok { color: #137542; }
+    #status.error { color: #c0392b; }
+    .actions { display: flex; align-items: center; gap: 7px; }
+    button {
+      height: 34px;
+      padding: 0 12px;
+      border: 1px solid #c7d6e9;
+      border-radius: 8px;
+      color: #294665;
+      background: rgba(255, 255, 255, .9);
+      font: 12px "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: border-color .15s, background .15s, transform .15s;
+    }
+    button:hover:not(:disabled) { border-color: #6ba4e8; background: #fff; transform: translateY(-1px); }
+    button:disabled { cursor: wait; opacity: .58; }
+    button.primary { border-color: #1677ff; color: #fff; background: #1677ff; }
+    button.primary:hover:not(:disabled) { background: #0f69e8; }
+    @media (max-width: 1050px) {
+      .brand { min-width: 205px; }
+      .button-detail { display: none; }
+      #status { min-width: 60px; }
+    }
+  </style>
+</head>
+<body>
+  <header id="toolbar">
+    <div class="brand">
+      <img src="../../assets/icon.png" alt="" />
+      <div>
+        <div class="brand-name">DeepSeek Harness Desktop</div>
+        <div class="versions">桌面壳 <span id="appVersion">--</span> · DSH <span id="dshVersion">检测中</span></div>
+      </div>
+    </div>
+    <div id="status" title="">服务运行中</div>
+    <div class="actions">
+      <button id="management" title="查看 token 用量、预估价格和可安装版本">用量/版本</button>
+      <button id="updateDsh" class="primary" title="从 DeepSeek 官方 npm 发布源安装最新版 Harness">更新 <span class="button-detail">官方 Harness</span></button>
+      <button id="restartDsh" title="只重启 DeepSeek Harness 服务">重启 <span class="button-detail">Harness</span></button>
+      <button id="restartApp" title="重启整个桌面应用">重启<span class="button-detail">应用</span></button>
+    </div>
+  </header>
+  <script>
+    const elements = {
+      appVersion: document.getElementById('appVersion'),
+      dshVersion: document.getElementById('dshVersion'),
+      status: document.getElementById('status'),
+      management: document.getElementById('management'),
+      updateDsh: document.getElementById('updateDsh'),
+      restartDsh: document.getElementById('restartDsh'),
+      restartApp: document.getElementById('restartApp'),
+    };
+
+    function showStatus(message, kind = '') {
+      elements.status.textContent = message;
+      elements.status.title = message;
+      elements.status.className = kind;
+    }
+
+    function setBusy(button, busy, busyText) {
+      if (!button.dataset.label) button.dataset.label = button.innerHTML;
+      button.disabled = busy;
+      button.innerHTML = busy ? busyText : button.dataset.label;
+    }
+
+    async function refreshInfo() {
+      const info = await window.dshApp.getInfo();
+      elements.appVersion.textContent = info.appVersion;
+      elements.dshVersion.textContent = info.dshVersion || '未安装';
+      if (info.dshVersion && info.latestDshVersion && info.dshVersion !== info.latestDshVersion) {
+        showStatus(`官方 Harness ${info.latestDshVersion} 可更新`, 'busy');
+      } else if (info.dshVersion && info.latestDshVersion) {
+        showStatus(`官方 Harness 已是最新版(${info.dshVersion})`, 'ok');
+      }
+    }
+
+    let updatingDsh = false;
+    elements.management.onclick = async () => {
+      await window.dshApp.openManagement();
+    };
+
+    elements.updateDsh.onclick = async () => {
+      if (updatingDsh) {
+        elements.updateDsh.disabled = true;
+        elements.updateDsh.textContent = '正在取消…';
+        showStatus('正在取消 Harness 更新…', 'busy');
+        await window.dshApp.cancelDshUpdate();
+        return;
+      }
+      updatingDsh = true;
+      if (!elements.updateDsh.dataset.label) elements.updateDsh.dataset.label = elements.updateDsh.innerHTML;
+      elements.updateDsh.innerHTML = '取消<span class="button-detail">更新</span>';
+      const result = await window.dshApp.updateDsh();
+      updatingDsh = false;
+      elements.updateDsh.disabled = false;
+      elements.updateDsh.innerHTML = elements.updateDsh.dataset.label;
+      if (result.ok) {
+        elements.dshVersion.textContent = result.version || '已更新';
+        showStatus(`Harness 已更新到 ${result.version || '最新版'}`, 'ok');
+      } else {
+        showStatus(`更新失败:${result.error || '未知错误'}`, 'error');
+      }
+    };
+
+    elements.restartDsh.onclick = async () => {
+      setBusy(elements.restartDsh, true, '重启中…');
+      const result = await window.dshApp.restartDsh();
+      setBusy(elements.restartDsh, false);
+      showStatus(result.ok ? 'Harness 服务重启成功' : `重启失败:${result.error || '未知错误'}`, result.ok ? 'ok' : 'error');
+    };
+
+    elements.restartApp.onclick = async () => {
+      setBusy(elements.restartApp, true, '重启中…');
+      showStatus('正在重启桌面应用…', 'busy');
+      await window.dshApp.restartApp();
+    };
+
+    window.dshApp.onOperationStatus((event) => {
+      showStatus(event.message, event.kind || 'busy');
+      if (event.dshVersion) elements.dshVersion.textContent = event.dshVersion;
+    });
+
+    refreshInfo().catch((error) => showStatus(`状态读取失败:${error.message}`, 'error'));
+  </script>
+</body>
+</html>

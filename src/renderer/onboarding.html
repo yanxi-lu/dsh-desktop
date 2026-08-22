@@ -16,6 +16,9 @@
     .bad { color: #cf222e; }
     pre { background: rgba(128,128,128,.12); padding: 12px 14px; border-radius: 6px; overflow-x: auto; }
     button { padding: 8px 22px; font-size: 15px; cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .58; }
+    .panel { margin: 22px 0; padding: 0 0 18px; border-bottom: 1px solid rgba(128,128,128,.25); }
+    [hidden] { display: none !important; }
     #hint { margin-top: 12px; }
   </style>
 </head>
@@ -23,11 +26,20 @@
   <h1>dsh-desktop 首次启动</h1>
   <p>本应用是 DeepSeek Harness(dsh)的桌面套壳,需要本机已安装以下环境:</p>
   <div id="rows"></div>
-  <h2>安装 dsh</h2>
-  <p>已安装 Node.js 后,在任意终端执行:</p>
-  <pre id="cmd">npm install -g @deepseek-ai/dsh</pre>
-  <button id="copy">复制命令</button>
-  <button id="recheck">重新检测</button>
+  <section id="nodePanel" class="panel" hidden>
+    <h2>安装 Node.js</h2>
+    <p>无需打开终端,桌面壳可通过 Windows 程序包管理器安装官方 Node.js LTS。</p>
+    <button id="installNode">一键安装 Node.js LTS</button>
+  </section>
+  <section class="panel">
+    <h2>安装 dsh</h2>
+    <p>已安装 Node.js 后,在任意终端执行:</p>
+    <pre id="cmd">npm install -g @deepseek-ai/dsh</pre>
+    <p>首次安装需要下载较多官方组件,通常需要数分钟;下方会持续显示进度。</p>
+    <button id="install">一键安装/更新 dsh</button>
+    <button id="copy">复制命令</button>
+    <button id="recheck">重新检测</button>
+  </section>
   <p id="hint"></p>
   <script>
     const rowsEl = document.getElementById('rows');
@@ -49,18 +61,60 @@
         rowsEl.append(div);
       }
       const ready = status.node && status.dsh;
+      document.getElementById('nodePanel').hidden = status.node;
+      document.getElementById('install').disabled = !status.node;
       document.getElementById('hint').textContent = ready
-        ? '环境就绪,正在启动…' : '';
+        ? '环境就绪,正在启动…'
+        : (!status.node ? '请先点击“一键安装 Node.js LTS”' : 'Node.js 已就绪,现在可以安装 dsh');
     }
     document.getElementById('copy').onclick = async () => {
       await navigator.clipboard.writeText(document.getElementById('cmd').textContent);
       document.getElementById('copy').textContent = '已复制';
       setTimeout(() => { document.getElementById('copy').textContent = '复制命令'; }, 1500);
     };
+    let installing = false;
+    document.getElementById('installNode').onclick = async () => {
+      const button = document.getElementById('installNode');
+      button.disabled = true;
+      button.textContent = '正在安装 Node.js…';
+      const result = await window.dshApp.installNode();
+      button.disabled = false;
+      button.textContent = '一键安装 Node.js LTS';
+      const status = await window.dshApp.getStatus();
+      render(status);
+      document.getElementById('hint').textContent = result.ok
+        ? `Node.js ${result.version || ''} 安装成功,现在可以安装 dsh`
+        : `Node.js 安装失败:${result.error || '未知错误'}`;
+    };
+    document.getElementById('install').onclick = async () => {
+      const button = document.getElementById('install');
+      if (installing) {
+        button.disabled = true;
+        button.textContent = '正在取消…';
+        document.getElementById('hint').textContent = '正在取消安装并清理 npm 子进程…';
+        await window.dshApp.cancelDshUpdate();
+        return;
+      }
+      installing = true;
+      button.textContent = '取消安装';
+      document.getElementById('hint').textContent = '正在准备官方 Harness 安装…';
+      const r = await window.dshApp.updateDsh();
+      installing = false;
+      button.disabled = false;
+      button.textContent = '一键安装/更新 dsh';
+      const status = await window.dshApp.getStatus();
+      render(status);
+      if (!r.ok) {
+        document.getElementById('hint').textContent = '安装失败:' + (r.error || '未知错误');
+      }
+    };
     document.getElementById('recheck').onclick = async () => {
       const r = await window.dshApp.recheck();
       render(r);
     };
+    window.dshApp.onOperationStatus((event) => {
+      document.getElementById('hint').textContent = event.message;
+    });
     window.dshApp.getStatus().then(render);
   </script>
 </body>
