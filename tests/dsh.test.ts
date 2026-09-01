@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import {
   resolveDshCommand,
   resolveNpmCommand,
@@ -17,6 +18,7 @@ import {
   detectNode,
   detectDsh,
   detectAll,
+  parseDshLaunchUrl,
   startDsh,
   waitForReady,
   killTree,
@@ -278,7 +280,34 @@ describe('startDsh', () => {
     const r = await startDsh(env, spawnFn);
     expect(spawnFn).toHaveBeenCalledWith('C:\\tools\\dsh.cmd', ['web', '--no-open'], { shell: true, windowsHide: true, env });
     expect(r.url).toBe('http://127.0.0.1:3080');
+    await expect(r.launchUrl).resolves.toBe('http://127.0.0.1:3080');
     expect(r.proc.pid).toBe(4242);
+  });
+
+  it('只接收本机 Harness 输出的一次性 token URL', async () => {
+    expect(parseDshLaunchUrl(
+      'dsh web: http://127.0.0.1:3080/?token=test-token_123',
+    )).toBe('http://127.0.0.1:3080/?token=test-token_123');
+    expect(parseDshLaunchUrl(
+      'open https://evil.example/?token=stolen',
+    )).toBeNull();
+    expect(parseDshLaunchUrl(
+      'dsh web: http://127.0.0.1:3080/?redirect=https://evil.example',
+    )).toBeNull();
+  });
+
+  it('从新版 Harness 子进程日志捕获启动 URL', async () => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const proc = Object.assign(fakeProc(), { stdout, stderr });
+    const spawnFn = vi.fn(async () => proc);
+    const started = await startDsh({ DSH_BIN: 'C:\\tools\\dsh.cmd' }, spawnFn);
+    stdout.write('initializing...\n');
+    stdout.write('dsh web: http://127.0.0.1:3080/?token=temporary-token\n');
+    await expect(started.launchUrl).resolves.toBe(
+      'http://127.0.0.1:3080/?token=temporary-token',
+    );
+    proc.emit('exit', 0);
   });
 
   it('未安装 dsh 时抛错', async () => {
@@ -345,6 +374,16 @@ describe('waitForReady', () => {
     await expect(
       waitForReady('http://127.0.0.1:3080', { timeoutMs: 50, pollIntervalMs: 10, fetchFn }),
     ).rejects.toThrow(/timeout|超时/i);
+  });
+
+  it('新版 token URL 用裸 origin 的 401 判断受保护服务已就绪', async () => {
+    const fetchFn = vi.fn(async () => ({ ok: false, status: 401 })) as unknown as typeof fetch;
+    await waitForReady('http://127.0.0.1:3080/?token=temporary-token', {
+      timeoutMs: 5000,
+      pollIntervalMs: 10,
+      fetchFn,
+    });
+    expect(fetchFn).toHaveBeenCalledWith('http://127.0.0.1:3080');
   });
 });
 

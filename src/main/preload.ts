@@ -58,8 +58,8 @@ contextBridge.exposeInMainWorld('dshApp', {
       };
     };
   }): Promise<unknown> => ipcRenderer.invoke('usage:get', request),
-  /** 通过 DeepSeek 官方接口查询账户余额；API Key 不在桌面壳中持久化 */
-  getBalance: (apiKey?: string): Promise<{
+  /** 使用 Harness 已配置的 DeepSeek Key 查询官方账户余额；Key 不进入 renderer */
+  getBalance: (): Promise<{
     ok: boolean;
     isAvailable?: boolean;
     balanceInfos?: Array<{
@@ -69,10 +69,10 @@ contextBridge.exposeInMainWorld('dshApp', {
       toppedUpBalance: string;
     }>;
     queriedAt?: string;
-    keySource?: 'input' | 'environment';
+    keySource?: 'environment' | 'credentials-file' | 'project-env' | 'user-env';
     code?: string;
     error?: string;
-  }> => ipcRenderer.invoke('balance:get', apiKey),
+  }> => ipcRenderer.invoke('balance:get'),
   /** 在系统浏览器打开 DeepSeek 官方价格页 */
   openPricingDocs: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('usage:open-pricing'),
   /** 订阅主进程推送的错误消息 */

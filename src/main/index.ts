@@ -2,7 +2,6 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import type { Tray } from 'electron';
 import { join } from 'node:path';
-import type { ChildProcess } from 'node:child_process';
 import {
   detectAll,
   startDsh,
@@ -14,6 +13,7 @@ import {
   normalizeDshTargetVersion,
   updateDshWithProgress,
 } from './dsh';
+import type { StartedDsh } from './dsh';
 import { installNodeLtsWithProgress } from './node-installer';
 import { PRICING_URL } from './usage';
 import { getUsageAnalytics } from './usage-analytics';
@@ -39,7 +39,7 @@ if (!gotLock) {
   let onboardingWindow: BrowserWindow | null = null;
   let crashWindow: BrowserWindow | null = null;
   let managementWindow: BrowserWindow | null = null;
-  let dshProc: { proc: ChildProcess; url: string } | null = null;
+  let dshProc: StartedDsh | null = null;
   let quitting = false;
   let tray: Tray | null = null;
   let exitWatchCleanup: (() => void) | null = null;
@@ -107,7 +107,13 @@ if (!gotLock) {
       started.proc.once('exit', onEarlyExit);
     });
     try {
-      await Promise.race([waitForReady(started.url), earlyExit]);
+      const readiness = (async (): Promise<void> => {
+        // Harness 0.1.2+ 用一次性 token 保护 Web UI；只在主进程内等待并使用该 URL。
+        const launchUrl = await started.launchUrl;
+        started.url = launchUrl;
+        await waitForReady(launchUrl);
+      })();
+      await Promise.race([readiness, earlyExit]);
     } catch (error) {
       if (dshProc?.proc === started.proc) dshProc = null;
       if (started.proc.pid) await killTree(started.proc.pid);
@@ -155,7 +161,7 @@ if (!gotLock) {
     closeWindow(onboardingWindow);
     closeWindow(crashWindow);
     if (mainWindow && !mainWindow.isDestroyed()) {
-      await reloadDshView(mainWindow);
+      await reloadDshView(mainWindow, dshProc?.url);
       mainWindow.show();
       mainWindow.focus();
     } else {
@@ -255,7 +261,7 @@ if (!gotLock) {
   function openMainWindow(): void {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
     const state = loadWindowState(stateFile);
-    mainWindow = createMainWindow(state, preloadPath);
+    mainWindow = createMainWindow(state, preloadPath, dshProc?.url);
     installWindowStateHooks(mainWindow, stateFile);
     mainWindow.on('close', (event) => {
       if (!quitting) {
@@ -366,7 +372,7 @@ if (!gotLock) {
   ipcMain.handle('app:restart', () => restartApp());
   ipcMain.handle('management:open', () => { openManagement(); return { ok: true }; });
   ipcMain.handle('usage:get', (_event, request?: unknown) => getUsageAnalytics(process.env, request));
-  ipcMain.handle('balance:get', (_event, apiKey?: unknown) => getDeepSeekBalance(apiKey, process.env));
+  ipcMain.handle('balance:get', () => getDeepSeekBalance(process.env));
   ipcMain.handle('usage:open-pricing', async () => {
     await shell.openExternal(PRICING_URL);
     return { ok: true };

@@ -109,6 +109,14 @@ export type SpawnFn = (
   opts: { shell: boolean; windowsHide: boolean; env?: NodeJS.ProcessEnv },
 ) => Promise<ChildProcess>;
 
+export interface StartedDsh {
+  proc: ChildProcess;
+  /** 兼容旧版 Harness 的无令牌服务地址；发现新版启动 URL 后会由入口更新。 */
+  url: string;
+  /** Harness 0.1.2+ 启动时输出带一次性 token 的 URL，令牌只留在主进程。 */
+  launchUrl: Promise<string>;
+}
+
 export type FetchLike = (url: string) => Promise<{ ok: boolean; status: number }>;
 
 export type ExecFn = (cmd: string) => Promise<{ stdout: string; stderr: string }>;
@@ -444,18 +452,93 @@ export async function updateDsh(
   return version;
 }
 
-/** 启动 dsh web 服务,返回子进程与目标地址 */
+/**
+ * 只接受当前本机 Harness origin 的启动 URL，避免把子进程输出中的任意链接载入桌面视图。
+ * 0.1.2+ 会返回 `/?token=...`；旧版无查询参数时统一回退到既有裸地址。
+ */
+export function parseDshLaunchUrl(output: string, expectedBaseUrl: string = dshUrl()): string | null {
+  let expected: URL;
+  try {
+    expected = new URL(expectedBaseUrl);
+  } catch {
+    return null;
+  }
+  const candidates = output.match(/https?:\/\/[^\s\x1b"'<>]+/gi) ?? [];
+  for (const candidate of candidates) {
+    const raw = candidate.replace(/[\])},;.!]+$/, '');
+    try {
+      const parsed = new URL(raw);
+      if (parsed.origin !== expected.origin || parsed.pathname !== '/') continue;
+      if (parsed.username || parsed.password || parsed.hash) continue;
+      if (!parsed.search) return expectedBaseUrl;
+      const keys = [...parsed.searchParams.keys()];
+      const token = parsed.searchParams.get('token');
+      if (keys.some((key) => key !== 'token') || !token) continue;
+      if (token.length > 512 || !/^[\x21-\x7e]+$/.test(token)) continue;
+      return parsed.toString();
+    } catch {
+      // 忽略普通日志中的非 URL 片段，继续寻找受信任的本机启动地址。
+    }
+  }
+  return null;
+}
+
+/** 持续读取并丢弃子进程日志，只把受信任的本机启动 URL 交回主进程。 */
+function captureDshLaunchUrl(
+  proc: ChildProcess,
+  fallbackUrl: string,
+  timeoutMs: number = config.readyTimeoutMs,
+): Promise<string> {
+  const streams: Array<NonNullable<ChildProcess['stdout']>> = [];
+  if (proc.stdout) streams.push(proc.stdout);
+  if (proc.stderr) streams.push(proc.stderr);
+  if (streams.length === 0) return Promise.resolve(fallbackUrl);
+
+  return new Promise<string>((resolve, reject) => {
+    let buffer = '';
+    let settled = false;
+    const timer = setTimeout(() => finish(fallbackUrl), timeoutMs);
+
+    const finish = (url: string): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      buffer = '';
+      resolve(url);
+    };
+    const onData = (chunk: string | Buffer): void => {
+      // 即使已解析出 URL 也继续消费日志，避免长时间运行的子进程因管道写满而阻塞。
+      if (settled) return;
+      buffer = `${buffer}${chunk.toString()}`.slice(-16_384);
+      const launchUrl = parseDshLaunchUrl(buffer, fallbackUrl);
+      if (launchUrl) finish(launchUrl);
+    };
+    const onExit = (code: number | null): void => {
+      for (const stream of streams) stream.removeListener('data', onData);
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`dsh 服务输出启动地址前退出(exit code ${code ?? 'unknown'})`));
+    };
+
+    for (const stream of streams) stream.on('data', onData);
+    proc.once('exit', onExit);
+  });
+}
+
+/** 启动 dsh web 服务,返回子进程、兼容地址和实际启动 URL。 */
 export async function startDsh(
   env: NodeJS.ProcessEnv,
   spawnFn: SpawnFn = defaultSpawn,
   whereFn?: (cmd: string) => Promise<string[]>,
-): Promise<{ proc: ChildProcess; url: string }> {
+): Promise<StartedDsh> {
   const cmd = await resolveDshCommand(env, whereFn);
   if (!cmd) {
     throw new Error('未找到 dsh,请先执行 npm install -g @deepseek-ai/dsh');
   }
   const proc = await spawnFn(cmd, config.dshArgs, { shell: true, windowsHide: true, env });
-  return { proc, url: dshUrl() };
+  const url = dshUrl();
+  return { proc, url, launchUrl: captureDshLaunchUrl(proc, url) };
 }
 
 /** 轮询直到服务就绪(2xx),超时抛错 */
@@ -466,11 +549,21 @@ export async function waitForReady(
   const timeoutMs = opts.timeoutMs ?? config.readyTimeoutMs;
   const pollIntervalMs = opts.pollIntervalMs ?? config.pollIntervalMs;
   const fetchFn = opts.fetchFn ?? defaultFetch;
+  let readinessUrl = url;
+  let tokenProtected = false;
+  try {
+    const parsed = new URL(url);
+    tokenProtected = Boolean(parsed.searchParams.get('token'));
+    // 不消费启动 token，也不依赖 Node fetch 保存 303 响应建立的浏览器 Cookie。
+    if (tokenProtected) readinessUrl = parsed.origin;
+  } catch {
+    // 非 URL 输入沿用原行为并由 fetch 失败/超时给出统一诊断。
+  }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetchFn(url);
-      if (res.ok) return;
+      const res = await fetchFn(readinessUrl);
+      if (res.ok || (tokenProtected && res.status === 401)) return;
     } catch {
       // 服务尚未监听,继续轮询
     }

@@ -21,10 +21,10 @@ describe('用量管理页面', () => {
     expect(html).toContain('id="recentPrev"');
     expect(html).toContain('id="recentNext"');
     expect(html).toContain('function refreshUsageFromFirstPage');
-    expect(html).toContain('id="balanceApiKey"');
+    expect(html).not.toContain('id="balanceApiKey"');
     expect(html).toContain('id="queryBalance"');
     expect(html).toContain('function renderBalance');
-    expect(html).not.toContain('localStorage.setItem(' + "'balance");
+    expect(html).toContain('密钥只在主进程内读取和使用');
     expect(statSync(vendor).size).toBeGreaterThan(1_000_000);
   });
 });

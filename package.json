@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "0.4.5",
+  "version": "0.4.7",
   "description": "DeepSeek Harness (dsh) Windows 桌面套壳:一键启动、更新与重启",
   "main": "dist/main/index.js",
   "scripts": {

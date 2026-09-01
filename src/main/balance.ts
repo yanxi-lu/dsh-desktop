@@ -1,4 +1,7 @@
 // DeepSeek 官方账户余额查询。API Key 只存在于本次请求内，不写入磁盘或日志。
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 export const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
 
@@ -9,12 +12,19 @@ export interface DeepSeekBalanceInfo {
   toppedUpBalance: string;
 }
 
+export type DeepSeekCredentialSource = 'environment' | 'credentials-file' | 'project-env' | 'user-env';
+
+export interface CredentialResolutionOptions {
+  homeDir?: string;
+  cwd?: string;
+}
+
 export type DeepSeekBalanceResult = {
   ok: true;
   isAvailable: boolean;
   balanceInfos: DeepSeekBalanceInfo[];
   queriedAt: string;
-  keySource: 'input' | 'environment';
+  keySource: DeepSeekCredentialSource;
 } | {
   ok: false;
   code: 'missing-key' | 'invalid-key' | 'insufficient-balance' | 'rate-limited' | 'timeout' | 'network' | 'invalid-response' | 'http-error';
@@ -25,6 +35,97 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function usableApiKey(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized && normalized.length <= 512 && /^[\x21-\x7e]+$/.test(normalized) ? normalized : null;
+}
+
+function yamlScalar(rawValue: string): string | null {
+  const raw = rawValue.trim();
+  if (!raw) return null;
+  if (raw.startsWith('"')) {
+    try {
+      return usableApiKey(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+  if (raw.startsWith("'")) {
+    if (!raw.endsWith("'") || raw.length < 2) return null;
+    return usableApiKey(raw.slice(1, -1).replace(/''/g, "'"));
+  }
+  return usableApiKey(raw.replace(/\s+#.*$/, ''));
+}
+
+/** 兼容当前简单 mapping 与早期 `{ version, refs }` 凭据文档。 */
+function apiKeyFromCredentialsDocument(text: string): string | null {
+  let direct: string | null = null;
+  let legacy: string | null = null;
+  let refsIndent: number | null = null;
+  for (const line of text.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+    if (!line.trim() || line.trimStart().startsWith('#')) continue;
+    const match = /^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/.exec(line);
+    if (!match) continue;
+    const indent = match[1].length;
+    const key = match[2];
+    const rawValue = match[3];
+    if (indent === 0) {
+      refsIndent = key === 'refs' && !rawValue.trim() ? indent : null;
+      if (key === 'DEEPSEEK_API_KEY') direct = yamlScalar(rawValue);
+      continue;
+    }
+    if (refsIndent !== null && indent > refsIndent && key === 'DEEPSEEK_API_KEY') {
+      legacy = yamlScalar(rawValue);
+    }
+  }
+  return direct ?? legacy;
+}
+
+function apiKeyFromEnvDocument(text: string): string | null {
+  for (const line of text.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+    if (!line.trim() || line.trimStart().startsWith('#')) continue;
+    const match = /^\s*(?:export\s+)?DEEPSEEK_API_KEY\s*=\s*(.*?)\s*$/.exec(line);
+    if (match) return yamlScalar(match[1]);
+  }
+  return null;
+}
+
+function readCredential(path: string, parser: (text: string) => string | null): string | null {
+  try {
+    return parser(readFileSync(path, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** 与 Harness credentials-local 的有效 Key 优先级保持一致，值永不返回给 renderer。 */
+export function resolveExistingDeepSeekApiKey(
+  env: NodeJS.ProcessEnv = process.env,
+  options: CredentialResolutionOptions = {},
+): { apiKey: string; source: DeepSeekCredentialSource } | null {
+  const environmentKey = usableApiKey(env.DEEPSEEK_API_KEY);
+  if (environmentKey) return { apiKey: environmentKey, source: 'environment' };
+
+  const dshHome = env.DSH_HOME?.trim()
+    ? resolve(env.DSH_HOME.trim())
+    : join(options.homeDir ?? homedir(), '.dsh');
+  const managedKey = readCredential(join(dshHome, '.credentials.yaml'), apiKeyFromCredentialsDocument);
+  if (managedKey) return { apiKey: managedKey, source: 'credentials-file' };
+
+  const invocationCwd = options.cwd ?? process.cwd();
+  const projectEnvPath = join(invocationCwd, '.env');
+  const projectKey = readCredential(projectEnvPath, apiKeyFromEnvDocument);
+  if (projectKey) return { apiKey: projectKey, source: 'project-env' };
+
+  const userEnvPath = join(dshHome, '.env');
+  if (resolve(userEnvPath) !== resolve(projectEnvPath)) {
+    const userKey = readCredential(userEnvPath, apiKeyFromEnvDocument);
+    if (userKey) return { apiKey: userKey, source: 'user-env' };
+  }
+  return null;
 }
 
 function balanceAmount(value: unknown): string {
@@ -47,21 +148,14 @@ function balanceInfo(value: unknown): DeepSeekBalanceInfo | null {
 }
 
 export async function getDeepSeekBalance(
-  apiKeyValue: unknown,
   env: NodeJS.ProcessEnv = process.env,
   fetchFn: typeof fetch = globalThis.fetch,
   now: number = Date.now(),
+  credentialOptions: CredentialResolutionOptions = {},
 ): Promise<DeepSeekBalanceResult> {
-  const inputKey = typeof apiKeyValue === 'string' ? apiKeyValue.trim() : '';
-  const environmentKey = env.DEEPSEEK_API_KEY?.trim() ?? '';
-  const apiKey = inputKey || environmentKey;
-  const keySource = inputKey ? 'input' : 'environment';
-  if (!apiKey) {
-    return { ok: false, code: 'missing-key', error: '请输入 DeepSeek API Key 后查询余额' };
-  }
-  if (apiKey.length > 512 || /[\r\n]/.test(apiKey)) {
-    return { ok: false, code: 'invalid-key', error: 'API Key 格式无效' };
-  }
+  const credential = resolveExistingDeepSeekApiKey(env, credentialOptions);
+  if (!credential) return { ok: false, code: 'missing-key', error: 'Harness 尚未配置 DeepSeek API Key' };
+  const { apiKey, source: keySource } = credential;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);

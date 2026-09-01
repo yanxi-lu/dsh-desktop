@@ -154,7 +154,11 @@ function isPositionVisible(screen: Electron.Screen, x: number, y: number): boole
  * 主窗:顶部加载本地桌面控制栏,下方用独立 WebContentsView 加载 dsh Web GUI。
  * 控制栏不属于 dsh 页面,因此 dsh 崩溃或升级时仍可执行重启/更新。
  */
-export function createMainWindow(state: WindowState, preloadPath: string): BrowserWindow {
+export function createMainWindow(
+  state: WindowState,
+  preloadPath: string,
+  dshServiceUrl: string = dshUrl(),
+): BrowserWindow {
   const { BrowserWindow, WebContentsView, app, screen, shell } = electron();
   const opts = attachPreload(
     {
@@ -202,7 +206,7 @@ export function createMainWindow(state: WindowState, preloadPath: string): Brows
   });
 
   void win.loadFile(rendererPath(app, 'shell.html'));
-  void dshView.webContents.loadURL(dshUrl());
+  void dshView.webContents.loadURL(dshServiceUrl);
   win.once('ready-to-show', () => win.show());
   win.on('closed', () => {
     dshViews.delete(win);
@@ -212,9 +216,12 @@ export function createMainWindow(state: WindowState, preloadPath: string): Brows
 }
 
 /** dsh 服务重启后重新加载主窗中的 Web GUI。 */
-export async function reloadDshView(win: BrowserWindow): Promise<boolean> {
+export async function reloadDshView(
+  win: BrowserWindow,
+  dshServiceUrl: string = dshUrl(),
+): Promise<boolean> {
   const dshView = dshViews.get(win);
   if (!dshView || dshView.webContents.isDestroyed()) return false;
-  await dshView.webContents.loadURL(dshUrl());
+  await dshView.webContents.loadURL(dshServiceUrl);
   return true;
 }

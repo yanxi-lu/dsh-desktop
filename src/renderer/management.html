@@ -17,7 +17,7 @@
     h2 { margin: 0; font-size: 17px; }
     h3 { margin: 20px 0 8px; font-size: 14px; }
     .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    button, select, input[type="date"], input[type="password"] { height: 34px; padding: 0 12px; border: 1px solid #c8d7e9; border-radius: 8px; color: #294665; background: #fff; font: 13px "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+    button, select, input[type="date"] { height: 34px; padding: 0 12px; border: 1px solid #c8d7e9; border-radius: 8px; color: #294665; background: #fff; font: 13px "Segoe UI", "Microsoft YaHei UI", sans-serif; }
     button { cursor: pointer; }
     button:hover:not(:disabled) { border-color: #408be5; background: #f5f9ff; }
     button:disabled { cursor: wait; opacity: .58; }
@@ -40,8 +40,8 @@
     .balance-amount { margin-top: 4px; color: #0758c5; font-size: 23px; font-weight: 750; }
     .balance-parts { display: flex; gap: 14px; margin-top: 7px; color: #667b99; font-size: 11px; }
     .balance-empty { grid-column: 1 / -1; padding: 10px 0; color: #788da8; font-size: 12px; }
-    .balance-query { display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 9px; margin-top: 12px; }
-    .balance-query input { width: 100%; font-family: Consolas, "SFMono-Regular", monospace; }
+    .balance-query { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+    .balance-query-note { color: #607792; font-size: 12px; }
     .balance-meta { min-height: 18px; margin-top: 8px; color: #667b99; font-size: 11px; }
     .custom-prices { display: grid; grid-template-columns: repeat(3, minmax(130px, 1fr)) auto; gap: 10px; margin: -4px 0 16px; padding: 12px; border: 1px solid #cfe0f5; border-radius: 10px; background: #f5f9ff; }
     .custom-prices[hidden] { display: none; }
@@ -149,7 +149,7 @@
       .custom-prices { grid-template-columns: 1fr; }
       .date-range-fields { width: 100%; align-items: stretch; flex-direction: column; }
       .date-range-fields label, .date-range-fields input { width: 100%; }
-      .balance-query { grid-template-columns: 1fr; }
+      .balance-query { align-items: stretch; flex-direction: column; }
     }
   </style>
 </head>
@@ -183,13 +183,13 @@
           <span id="balanceAvailability" class="balance-state">未查询</span>
         </div>
         <div id="balanceInfos" class="balance-grid">
-          <div class="balance-empty">输入 DeepSeek API Key 后可查询官方账户余额</div>
+          <div class="balance-empty">自动使用 Harness 当前已配置的 DeepSeek API Key</div>
         </div>
         <div class="balance-query">
-          <input id="balanceApiKey" type="password" aria-label="DeepSeek API Key" placeholder="DeepSeek API Key（仅保留在当前窗口）" autocomplete="off" spellcheck="false" />
+          <span class="balance-query-note">密钥只在主进程内读取和使用，不会发送到本页面。</span>
           <button id="queryBalance" class="primary">查询余额</button>
         </div>
-        <div id="balanceMeta" class="balance-meta">也可通过系统环境变量 DEEPSEEK_API_KEY 提供密钥；第三方中转服务余额不适用。</div>
+        <div id="balanceMeta" class="balance-meta">请先在 Harness“模型设置”中配置官方 DeepSeek Key；第三方中转服务余额不适用。</div>
       </div>
       <div class="cards">
         <div class="card"><div class="label">模型调用</div><div id="requestCount" class="value">--</div></div>
@@ -322,7 +322,7 @@
   <script src="vendor/echarts.min.js"></script>
   <script>
     const ids = [
-      'dateRange', 'customDateRange', 'customStartDate', 'customEndDate', 'applyDateRange', 'modelFilter', 'balanceAvailability', 'balanceInfos', 'balanceApiKey', 'queryBalance', 'balanceMeta', 'priceModel', 'priceTier', 'customPrices', 'customHit',
+      'dateRange', 'customDateRange', 'customStartDate', 'customEndDate', 'applyDateRange', 'modelFilter', 'balanceAvailability', 'balanceInfos', 'queryBalance', 'balanceMeta', 'priceModel', 'priceTier', 'customPrices', 'customHit',
       'customMiss', 'customOutput', 'saveCustom', 'refreshUsage', 'pricingDocs', 'requestCount',
       'totalTokens', 'cacheHitRate', 'sessionCount', 'estimated', 'cachedTable', 'cachedRate',
       'cachedCost', 'uncachedTable', 'uncachedRate', 'uncachedCost', 'outputTable', 'outputRate',
@@ -378,7 +378,9 @@
         empty.className = 'balance-empty';
         empty.textContent = result.error || '余额查询失败';
         el.balanceInfos.append(empty);
-        el.balanceMeta.textContent = 'API Key 不会写入本地存储；第三方中转服务余额不适用。';
+        el.balanceMeta.textContent = result.code === 'missing-key'
+          ? '请先在 Harness“模型设置”中配置官方 DeepSeek Key。'
+          : '第三方中转服务余额不适用。';
         return;
       }
       el.balanceAvailability.textContent = result.isAvailable ? '账户可用' : '余额不足';
@@ -413,8 +415,14 @@
         el.balanceInfos.append(card);
       }
       const queriedAt = result.queriedAt ? new Date(result.queriedAt).toLocaleString('zh-CN') : '刚刚';
-      const sourceLabel = result.keySource === 'environment' ? '系统环境变量' : '当前窗口输入';
-      el.balanceMeta.textContent = `查询时间 ${queriedAt} · 密钥来源：${sourceLabel} · 密钥未写入本地存储`;
+      const sourceLabels = {
+        environment: '启动环境',
+        'credentials-file': 'Harness 凭据文件',
+        'project-env': '项目 .env',
+        'user-env': '用户 .env',
+      };
+      const sourceLabel = sourceLabels[result.keySource] || 'Harness 凭据';
+      el.balanceMeta.textContent = `查询时间 ${queriedAt} · 密钥来源：${sourceLabel} · 密钥未进入页面`;
     }
     async function refreshBalance() {
       el.queryBalance.disabled = true;
@@ -422,8 +430,7 @@
       el.balanceAvailability.textContent = '查询中';
       el.balanceAvailability.className = 'balance-state';
       try {
-        const apiKey = el.balanceApiKey.value.trim();
-        renderBalance(await window.dshApp.getBalance(apiKey || undefined));
+        renderBalance(await window.dshApp.getBalance());
       } catch {
         renderBalance({ ok: false, code: 'network', error: '余额查询功能暂时不可用' });
       } finally {
@@ -817,7 +824,6 @@
     el.refreshVersions.onclick = refreshVersions;
     el.refreshUsage.onclick = refreshUsage;
     el.queryBalance.onclick = refreshBalance;
-    el.balanceApiKey.onkeydown = (event) => { if (event.key === 'Enter') refreshBalance(); };
     el.dateRange.onchange = () => {
       showCustomDateRange();
       if (el.dateRange.value !== 'custom') refreshUsageFromFirstPage();
