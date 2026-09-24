@@ -1,0 +1,65 @@
+:root { --surface: #fff; --canvas: #f2f5fb; --ink: #172640; --muted: #6b7e9b; --line: #dce5f2; --soft: #f5f8fe; --accent: #1267e6; }
+:root[data-theme=dark] { color-scheme: dark; --surface: #131d30; --canvas: #0a1220; --ink: #e1eaf9; --muted: #97a9c7; --line: #293a57; --soft: #19273e; --accent: #4f97ff; }
+[hidden] { display: none !important; }
+body { background: var(--canvas); color: var(--ink); }
+header { padding: 21px 28px; background: linear-gradient(110deg, #0c1b37, #133c77 70%, #0b6586); border-bottom: 1px solid #2777b8; }
+.header-caption { font-size: 13px; font-weight: 400; opacity: .7; margin-left: 14px; }
+.workbench { display: grid; grid-template-columns: 170px minmax(0, 1fr); min-height: calc(100vh - 72px); }
+.workbench-nav { border-right: 1px solid var(--line); background: var(--surface); padding: 22px 12px; position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 9px; }
+.workbench-nav button { border: 0; height: 43px; text-align: left; background: transparent; color: var(--muted); padding-left: 17px; font-weight: 600; }
+.workbench-nav button[aria-current=page] { background: var(--soft); color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
+.nav-note { font-size: 11px; color: var(--muted); padding: 16px 10px; line-height: 1.7; }
+.workbench-pages { min-width: 0; }
+.workbench-pages main { padding: 23px; max-width: 1700px; margin: auto; }
+section, .subpanel { background: var(--surface); border-color: var(--line); color: var(--ink); }
+section { box-shadow: 0 5px 24px #041e4410; }
+.hint, .label, .page-info, .subpanel-note, .chart-foot, .balance-meta, .balance-query-note { color: var(--muted); }
+button, select, input, textarea { color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 13px; }
+input:not([type=checkbox]), textarea { padding: 8px 10px; min-width: 0; }
+button { font-size: 13px; }
+button:hover:not(:disabled) { color: var(--accent); background: var(--soft); }
+button.primary:hover:not(:disabled) { color: white; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cards .card, .version-box, .balance-panel, .balance-card, .date-range-fields { background: var(--soft); border-color: var(--line); }
+.table-wrap, td, th, tbody tr, .pagination, .chart-wrap { border-color: var(--line); }
+th, tbody tr:hover { background: var(--soft); color: var(--ink); }
+td { color: var(--ink); }
+.chart-section { background: var(--surface); }
+.chart-wrap { background: var(--soft); }
+.wb-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 19px; }
+.wb-head h2 { font-size: 22px; }
+.eyebrow { font-size: 10px; color: var(--accent); letter-spacing: 2px; margin: 0 0 8px; }
+.wb-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 17px 0; }
+.wb-metric { background: var(--soft); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+.wb-metric strong { font-size: 27px; display: block; margin: 9px 0; font-variant-numeric: tabular-nums; }
+.wb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.wb-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; margin: 18px 0; }
+.wb-form label { display: flex; flex-direction: column; gap: 7px; color: var(--muted); font-size: 12px; }
+.wb-form label.check { flex-direction: row; align-items: center; }
+.wb-form .full { grid-column: 1 / -1; }
+.wb-form input[type=checkbox] { width: 17px; height: 17px; }
+.wb-form select { width: 100%; }
+.wb-status { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; color: var(--muted); margin-top: 12px; }
+.wb-status.error { color: #e35b69; }
+.wb-status.ok { color: #13a37a; }
+.wb-toast { position: fixed; bottom: 24px; right: 24px; background: var(--ink); color: var(--surface); border-radius: 10px; padding: 12px 20px; max-width: min(620px, 80vw); z-index: 30; box-shadow: 0 8px 40px #0003; }
+.budget-track { height: 6px; background: var(--line); border-radius: 8px; overflow: hidden; margin-top: 12px; }
+.budget-track i { display: block; height: 100%; border-radius: 8px; background: linear-gradient(90deg, #2779ff, #28c8bc); }
+.budget-track i.over { background: #ec677b; }
+.wb-actions { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+.wb-actions button { white-space: nowrap; }
+.wb-table th, .wb-table td { padding: 12px 9px; }
+.session-name { font-weight: 600; max-width: 310px; white-space: normal; overflow-wrap: anywhere; }
+.small-id { display: block; color: var(--muted); font-size: 11px; font-weight: 400; margin-top: 5px; }
+.badge { display: inline-block; background: var(--soft); border: 1px solid var(--line); color: var(--accent); border-radius: 6px; padding: 3px 7px; font-size: 11px; margin: 3px; }
+.plugin-card { padding: 17px; border: 1px solid var(--line); border-radius: 12px; background: var(--soft); margin: 12px 0; }
+.plugin-card h3 { margin: 0; }
+.plugin-card p { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.diagnostic { padding: 15px 0; border-bottom: 1px solid var(--line); }
+.diagnostic strong { display: block; margin-bottom: 7px; }
+.diagnostic p { margin: 6px 0; font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.diagnostic .error { color: #e35b69; }
+dialog { max-width: min(680px, 90vw); width: 580px; border: 1px solid var(--line); border-radius: 16px; padding: 24px; background: var(--surface); color: var(--ink); }
+dialog::backdrop { background: #0007; backdrop-filter: blur(4px); }
+.notice { padding: 12px 15px; border-radius: 9px; background: var(--soft); border-left: 3px solid var(--accent); color: var(--muted); font-size: 12px; line-height: 1.7; margin: 12px 0; }
+@media(max-width: 1060px) { .workbench { grid-template-columns: 132px minmax(0, 1fr); } .workbench-pages main { padding: 16px; } .workbench-nav { padding: 16px 8px; } .wb-metrics { grid-template-columns: 1fr; } .wb-grid { grid-template-columns: 1fr; } }

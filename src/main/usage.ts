@@ -5,13 +5,13 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 export const PRICING_URL = 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/';
-export const PRICE_VERIFIED_ON = '2026-08-22';
+export const PRICE_VERIFIED_ON = '2026-09-24';
 
 export const DEEPSEEK_PRICES = {
   'deepseek-v4-flash': {
-    label: 'DeepSeek-V4-Flash-0731',
-    offpeak: { cacheHitPerMillionCny: 0.05, cacheMissPerMillionCny: 1.5, outputPerMillionCny: 4.5 },
-    peak: { cacheHitPerMillionCny: 0.1, cacheMissPerMillionCny: 3, outputPerMillionCny: 9 },
+    label: 'DeepSeek-V4.1-Flash（含旧 Flash 别名）',
+    offpeak: { cacheHitPerMillionCny: 0.02, cacheMissPerMillionCny: 1, outputPerMillionCny: 4 },
+    peak: { cacheHitPerMillionCny: 0.04, cacheMissPerMillionCny: 2, outputPerMillionCny: 8 },
   },
   'deepseek-v4-pro': {
     label: 'DeepSeek-V4-Pro-0813',
@@ -19,9 +19,9 @@ export const DEEPSEEK_PRICES = {
     peak: { cacheHitPerMillionCny: 0.3, cacheMissPerMillionCny: 9, outputPerMillionCny: 27 },
   },
   'deepseek-v4-flash-vision-exp': {
-    label: 'DeepSeek-V4-Flash-Vision-Exp',
-    offpeak: { cacheHitPerMillionCny: 0.05, cacheMissPerMillionCny: 1.5, outputPerMillionCny: 4.5 },
-    peak: { cacheHitPerMillionCny: 0.1, cacheMissPerMillionCny: 3, outputPerMillionCny: 9 },
+    label: 'Flash Vision 别名 → V4.1-Flash',
+    offpeak: { cacheHitPerMillionCny: 0.02, cacheMissPerMillionCny: 1, outputPerMillionCny: 4 },
+    peak: { cacheHitPerMillionCny: 0.04, cacheMissPerMillionCny: 2, outputPerMillionCny: 8 },
   },
 } as const;
 

@@ -7,8 +7,10 @@ if ((Split-Path -Parent $target) -ne $projectRoot -or (Split-Path -Leaf $target)
 }
 if (Test-Path -LiteralPath $target) {
     $item = Get-Item -LiteralPath $target -Force
-    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
         throw "拒绝清理链接目录: $target"
     }
+    $links = @(Get-ChildItem -LiteralPath $target -Recurse -Force -Attributes ReparsePoint -ErrorAction Stop)
+    if ($links.Count -gt 0) { throw "拒绝清理包含链接的编译目录: $target" }
     Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
 }

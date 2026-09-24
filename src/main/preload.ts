@@ -1,12 +1,32 @@
 // preload:向 renderer 暴露最小 IPC 面(sandbox 环境下仅 contextBridge/ipcRenderer 可用)。
 import { contextBridge, ipcRenderer } from 'electron';
 
+contextBridge.exposeInMainWorld('dshWorkbench', {
+  settings: () => ipcRenderer.invoke('desktop:settings-get'),
+  saveSettings: (value: unknown) => ipcRenderer.invoke('desktop:settings-save', value),
+  overview: () => ipcRenderer.invoke('desktop:overview'), budget: () => ipcRenderer.invoke('desktop:budget'),
+  sessions: () => ipcRenderer.invoke('desktop:sessions'),
+  archive: (id: string, archived: boolean) => ipcRenderer.invoke('desktop:archive', id, archived),
+  openHarness: (id?: string) => ipcRenderer.invoke('desktop:open-harness', id),
+  plugins: () => ipcRenderer.invoke('desktop:plugins'), inspectPlugin: (spec: string) => ipcRenderer.invoke('desktop:plugin-inspect', spec),
+  searchPlugins: (query: string) => ipcRenderer.invoke('desktop:plugin-search', query), pluginUpdates: () => ipcRenderer.invoke('desktop:plugin-updates'),
+  changePlugin: (action: string, spec: string) => ipcRenderer.invoke('desktop:plugin-change', action, spec),
+  diagnose: () => ipcRenderer.invoke('desktop:diagnose'), exportDiagnostics: () => ipcRenderer.invoke('desktop:diagnostic-export'),
+  changePort: () => ipcRenderer.invoke('desktop:port-change'), pickWorkspace: () => ipcRenderer.invoke('desktop:workspace-pick'),
+  restore: () => ipcRenderer.invoke('desktop:restore'), cancelQueue: () => ipcRenderer.invoke('desktop:queue-cancel'),
+  releaseNotes: (version: string) => ipcRenderer.invoke('desktop:release-notes', version),
+  rebuild: (request: unknown) => ipcRenderer.invoke('usage:rebuild', request),
+  exportUsage: (request: unknown, format: string, section: string) => ipcRenderer.invoke('usage:export', request, format, section),
+  exportSettings: () => ipcRenderer.invoke('desktop:settings-export'), importSettings: () => ipcRenderer.invoke('desktop:settings-import'),
+});
+
 contextBridge.exposeInMainWorld('dshApp', {
   /** 桌面壳与本机 Harness 的版本信息 */
   getInfo: (): Promise<{
     appVersion: string;
     dshVersion: string | null;
     latestDshVersion: string | null;
+    updateAvailable: boolean;
   }> =>
     ipcRenderer.invoke('dsh:info'),
   /** 获取环境检测状态 */
@@ -24,7 +44,7 @@ contextBridge.exposeInMainWorld('dshApp', {
   /** 正常运行时一键重启 Harness 服务 */
   restartDsh: (): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('dsh:restart'),
-  /** 一键安装/更新 npm 全局 DeepSeek Harness,随后自动重启服务 */
+  /** 在桌面壳独立目录安装官方 Harness，备份后切换并重启服务 */
   updateDsh: (targetVersion?: string): Promise<{ ok: boolean; version?: string; error?: string }> =>
     ipcRenderer.invoke('dsh:update', targetVersion),
   /** npm 官方已发布版本列表 */

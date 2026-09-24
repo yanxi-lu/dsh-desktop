@@ -13,6 +13,9 @@ describe('用量管理页面', () => {
     expect(html).toContain("smooth: .58");
     expect(html).toContain('id="sessionStatsBody"');
     expect(html).toContain('function renderSessionStats');
+    expect(html).toContain('<option value="today" selected>今天</option>');
+    expect(html).toContain('<option value="30d">近 30 天</option>');
+    expect(html).not.toContain('<option value="30d" selected>近 30 天</option>');
     expect(html).toContain('<option value="custom">自定义范围</option>');
     expect(html).toContain('id="customStartDate"');
     expect(html).toContain('id="customEndDate"');

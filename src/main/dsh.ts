@@ -115,6 +115,24 @@ export interface StartedDsh {
   url: string;
   /** Harness 0.1.2+ 启动时输出带一次性 token 的 URL，令牌只留在主进程。 */
   launchUrl: Promise<string>;
+  diagnostics?: RuntimeDiagnostic[];
+}
+
+export interface RuntimeDiagnostic { code: string; message: string; count: number; lastSeen: string }
+/** Retain only known error categories, never the raw log (it may contain user text or credentials). */
+export function collectRuntimeDiagnostics(chunk: string, reports: RuntimeDiagnostic[]): void {
+  const categories: Array<[RegExp, string, string]> = [
+    [/EADDRINUSE/i, 'port-in-use', '监听端口已被占用，可在诊断中更换端口'],
+    [/ERR_MODULE_NOT_FOUND|Cannot find module/i, 'missing-module', '运行依赖缺失，可重新安装当前版本'],
+    [/ENOENT/i, 'missing-path', '服务访问的文件或目录不存在，请检查工作文件夹'],
+    [/EACCES|EPERM/i, 'permission', '服务遇到访问权限或文件占用问题'],
+    [/plugin[^\r\n]{0,100}(?:failed|error)/i, 'plugin-error', '插件出现错误，请检查插件状态或恢复配置快照'],
+  ];
+  for (const [pattern, code, message] of categories) if (pattern.test(chunk)) {
+    const found = reports.find(r => r.code === code);
+    if (found) { found.count++; found.lastSeen = new Date().toISOString(); }
+    else reports.push({ code, message, count: 1, lastSeen: new Date().toISOString() });
+  }
 }
 
 export type FetchLike = (url: string) => Promise<{ ok: boolean; status: number }>;
@@ -138,6 +156,7 @@ export interface StreamingUpdateOptions {
   timeoutMs?: number;
   spawnFn?: typeof spawn;
   targetVersion?: string;
+  installPrefix?: string;
 }
 
 const defaultSpawn: SpawnFn = (cmd, args, opts) =>
@@ -168,6 +187,7 @@ const defaultCommandExec: CommandExecFn = async (cmd, args) => {
     shell: true,
     windowsHide: true,
     maxBuffer: 8 * 1024 * 1024,
+    timeout: 20_000,
   });
   return { stdout, stderr };
 };
@@ -259,6 +279,11 @@ export function parsePublishedDshVersions(output: string): string[] {
   }
 }
 
+export function isNewerVersion(candidate: string, installed: string): boolean {
+  const versions = parsePublishedDshVersions(JSON.stringify([candidate, installed]));
+  return versions.length === 2 && versions[0] === candidate;
+}
+
 /** 查询 DeepSeek 官方 npm 包的 latest 版本。网络不可用时返回 null。 */
 export async function getLatestDshVersion(
   env: NodeJS.ProcessEnv,
@@ -339,7 +364,7 @@ export async function updateDshWithProgress(
     {
       shell: true,
       windowsHide: true,
-      env: { ...env, FORCE_COLOR: '0', NO_COLOR: '1' },
+      env: { ...env, FORCE_COLOR: '0', NO_COLOR: '1', ...(options.installPrefix ? { NPM_CONFIG_PREFIX: options.installPrefix } : {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );
@@ -428,7 +453,7 @@ export async function updateDshWithProgress(
     downloaded,
     elapsedSeconds: Math.floor((Date.now() - startedAt) / 1000),
   });
-  const version = await getDshVersion(env, options.whereFn);
+  const version = await getDshVersion(options.installPrefix ? { ...env, DSH_BIN: join(options.installPrefix, 'dsh.cmd') } : env, options.whereFn);
   if (!version) throw new Error('安装完成,但未能读取 dsh 版本;请点击“重新检测”');
   return version;
 }
@@ -488,6 +513,7 @@ function captureDshLaunchUrl(
   proc: ChildProcess,
   fallbackUrl: string,
   timeoutMs: number = config.readyTimeoutMs,
+  diagnostics: RuntimeDiagnostic[] = [],
 ): Promise<string> {
   const streams: Array<NonNullable<ChildProcess['stdout']>> = [];
   if (proc.stdout) streams.push(proc.stdout);
@@ -507,6 +533,7 @@ function captureDshLaunchUrl(
       resolve(url);
     };
     const onData = (chunk: string | Buffer): void => {
+      collectRuntimeDiagnostics(chunk.toString(), diagnostics);
       // 即使已解析出 URL 也继续消费日志，避免长时间运行的子进程因管道写满而阻塞。
       if (settled) return;
       buffer = `${buffer}${chunk.toString()}`.slice(-16_384);
@@ -538,7 +565,8 @@ export async function startDsh(
   }
   const proc = await spawnFn(cmd, config.dshArgs, { shell: true, windowsHide: true, env });
   const url = dshUrl();
-  return { proc, url, launchUrl: captureDshLaunchUrl(proc, url) };
+  const diagnostics: RuntimeDiagnostic[] = [];
+  return { proc, url, launchUrl: captureDshLaunchUrl(proc, url, config.readyTimeoutMs, diagnostics), diagnostics };
 }
 
 /** 轮询直到服务就绪(2xx),超时抛错 */

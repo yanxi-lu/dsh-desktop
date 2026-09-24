@@ -62,7 +62,7 @@ describe('Harness 会话日志用量分析', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-analytics-'));
     const sessionDir = join(root, 'project', 'session-a');
     mkdirSync(sessionDir, { recursive: true });
-    const peak = Date.parse('2026-08-22T10:30:00+08:00');
+    const peak = Date.parse('2026-08-21T10:30:00+08:00');
     const offpeak = Date.parse('2026-08-21T20:30:00+08:00');
     const old = Date.parse('2026-07-01T10:30:00+08:00');
     const raw = [
@@ -100,10 +100,10 @@ describe('Harness 会话日志用量分析', () => {
   });
 
   it('按北京时间判断官方高峰', () => {
-    expect(isDeepSeekPeakTime(Date.parse('2026-08-22T09:00:00+08:00'))).toBe(true);
-    expect(isDeepSeekPeakTime(Date.parse('2026-08-22T12:00:00+08:00'))).toBe(false);
-    expect(isDeepSeekPeakTime(Date.parse('2026-08-22T14:00:00+08:00'))).toBe(true);
-    expect(isDeepSeekPeakTime(Date.parse('2026-08-22T18:00:00+08:00'))).toBe(false);
+    expect(isDeepSeekPeakTime(Date.parse('2026-08-21T09:00:00+08:00'))).toBe(true);
+    expect(isDeepSeekPeakTime(Date.parse('2026-08-21T12:00:00+08:00'))).toBe(false);
+    expect(isDeepSeekPeakTime(Date.parse('2026-08-21T14:00:00+08:00'))).toBe(true);
+    expect(isDeepSeekPeakTime(Date.parse('2026-08-21T18:00:00+08:00'))).toBe(false);
   });
 
   it('按自定义起止日期包含首尾当天并同步生成每日趋势', () => {

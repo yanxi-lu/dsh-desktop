@@ -14,8 +14,11 @@
   <h1>dsh 服务已停止</h1>
   <p>DeepSeek Harness 进程意外退出。<br />你可以重启服务,或在托盘菜单中退出应用。</p>
   <button id="restart">重启服务</button>
+  <button id="diagnose">打开工作台与诊断</button>
   <p id="result"></p>
   <script>
+    document.getElementById('diagnose').onclick = () => window.dshApp.openManagement();
+    window.dshApp.onOperationStatus(event => { document.getElementById('result').textContent = event.message; });
     document.getElementById('restart').onclick = async () => {
       document.getElementById('restart').disabled = true;
       document.getElementById('result').textContent = '正在重启…';

@@ -1,10 +1,14 @@
 // Harness 本机会话用量分析。
 // 只从 Harness 会话日志提取时间、provider、model 与 usage 元数据；
 // 不保存、不返回提示词、回复正文、工具参数、工作目录或凭据。
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, fstatSync, mkdirSync, openSync, readSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync, type Stats } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { zstdDecompressSync } from 'node:zlib';
+import { resolveRecordPrice, validatePriceRules, RULE_VERSION, type CustomPriceRule } from './pricing-catalog';
+export { isDeepSeekPeakTime } from './pricing-catalog';
 import {
   DEEPSEEK_PRICES,
   PRICE_VERIFIED_ON,
@@ -29,11 +33,16 @@ export interface RawUsageRecord extends UsageTotals {
 
 export interface UsageRecord extends RawUsageRecord {
   estimatedCny: number;
+  priceRule: string;
+  unpriced: boolean;
 }
 
 export interface ParsedSessionLog {
   sessionId: string;
   records: RawUsageRecord[];
+  formatVersion?: number;
+  invalidLines?: number;
+  taskState?: { kind: 'running' | 'completed' | 'error' | 'attention' | 'stopped'; time: number; seq: number };
 }
 
 export interface UsageTrendPoint extends UsageTotals {
@@ -51,6 +60,7 @@ export interface UsageModelStat extends UsageTotals {
   requestCount: number;
   totalTokens: number;
   estimatedCny: number;
+  unpricedCount: number;
 }
 
 export interface UsageSessionStat extends UsageTotals {
@@ -60,6 +70,7 @@ export interface UsageSessionStat extends UsageTotals {
   requestCount: number;
   totalTokens: number;
   estimatedCny: number;
+  unpricedCount: number;
   lastActiveAt: number;
 }
 
@@ -71,6 +82,8 @@ export interface UsageAnalyticsRequest {
   recentPage?: unknown;
   recentPageSize?: unknown;
   pricing?: PricingRequest | unknown;
+  sessionFilter?: unknown;
+  priceRules?: unknown;
 }
 
 export interface UsageAnalyticsSummary {
@@ -107,6 +120,16 @@ export interface UsageAnalyticsSummary {
   skippedFileCount: number;
   pricingUrl: string;
   priceVerifiedOn: string;
+  ruleVersion: string;
+  customPriceRules: CustomPriceRule[];
+  sessionFilter: string;
+  unpricedCount: number;
+  warnings: string[];
+  completeness: 'complete' | 'partial' | 'empty';
+  taskEvents: Array<{ sessionId: string; kind: string; time: number; seq: number }>;
+  priceSimulation: boolean;
+  comparison: { start: string; end: string; requestCount: number; totalTokens: number; estimatedCny: number; unpricedCount: number; cacheHitRate: number; tokenChangeRatio: number | null; costChangeRatio: number | null; cacheHitChangePoints: number };
+  indexStatus: { durationMs: number; bytesRead: number; parsedFiles: number; reusedFiles: number; incrementalFiles: number; cacheBytes: number; unsupportedFiles: number; invalidLines: number; formats: number[] };
 }
 
 const ZSTD_MAGIC = 4_247_762_216;
@@ -213,14 +236,30 @@ export function scanZstdFrames(buffer: Buffer): Array<{ start: number; end: numb
   return frames;
 }
 
-function parseSessionLogChunks(chunks: Iterable<string>, fallbackSessionId = 'unknown'): ParsedSessionLog {
-  let sessionId = fallbackSessionId;
-  let fallbackTime = 0;
-  let provider = '未标注';
-  let model = '未标注';
+interface SessionParserState extends ParsedSessionLog {
+  fallbackTime: number;
+  provider: string;
+  model: string;
+  lastSample: { turn: number; step: number; index: number; totals: UsageTotals } | null;
+  inheriting?: boolean;
+}
+
+function parseSessionLogChunks(
+  chunks: Iterable<string>,
+  fallbackSessionId = 'unknown',
+  previous?: SessionParserState,
+): { state: SessionParserState; resumable: boolean } {
+  let sessionId = previous?.sessionId ?? fallbackSessionId;
+  let fallbackTime = previous?.fallbackTime ?? 0;
+  let provider = previous?.provider ?? '未标注';
+  let model = previous?.model ?? '未标注';
   let pending = '';
-  let lastSample: { turn: number; step: number; index: number; totals: UsageTotals } | null = null;
-  const records: RawUsageRecord[] = [];
+  let lastSample = previous?.lastSample ? { ...previous.lastSample } : null;
+  let formatVersion = previous?.formatVersion ?? 0;
+  let invalidLines = previous?.invalidLines ?? 0;
+  let taskState = previous?.taskState;
+  let inheriting = previous?.inheriting ?? false;
+  const records: RawUsageRecord[] = previous ? previous.records.slice() : [];
 
   function consumeLine(line: string): void {
     if (!line.trim()) return;
@@ -230,15 +269,36 @@ function parseSessionLogChunks(chunks: Iterable<string>, fallbackSessionId = 'un
       if (!parsed) return;
       event = parsed;
     } catch {
+      invalidLines++;
       return;
     }
     if (event.type === 'session') {
       sessionId = safeText(event.id, sessionId);
       fallbackTime = safeToken(event.createdAt);
+      formatVersion = safeToken(event.version);
+      inheriting = event.isSeeded === true;
       return;
     }
+    if (formatVersion > 4) return;
     const data = asRecord(event.data);
     if (!data) return;
+    // Fork seeds repeat the parent's history, not new billable requests.
+    if (inheriting && event.type === 'session/end-seed' && data.inherited === true) { inheriting = false; lastSample = null; return; }
+    if (inheriting) {
+      if (event.type === 'request/context') { provider = safeText(data.provider, provider); model = safeText(data.model, model); }
+      return;
+    }
+    if (['turn/start', 'turn/end', 'approval/asked', 'approval/decided'].includes(String(event.type))) {
+      const reason = asRecord(data.reason)?.kind ?? data.reason;
+      const kind = event.type === 'turn/start' || event.type === 'approval/decided' ? 'running'
+        : event.type === 'approval/asked' ? 'attention' : reason === 'completed' ? 'completed' : reason === 'error' ? 'error'
+          : reason === 'blocked' ? 'attention' : 'stopped';
+      taskState = { kind, time: safeToken(event.time), seq: safeToken(event.seq) };
+    }
+    if (event.type === 'llm/retry-started') {
+      if (lastSample?.turn === data.turn && lastSample?.step === data.step) lastSample = null;
+      return;
+    }
     if (event.type === 'request/context') {
       provider = safeText(data.provider, provider);
       model = safeText(data.model, model);
@@ -249,8 +309,16 @@ function parseSessionLogChunks(chunks: Iterable<string>, fallbackSessionId = 'un
       const chunk = asRecord(data.chunk);
       if (chunk?.type !== 'usage') return;
       usageValue = chunk.usage;
-    } else if (event.type === 'assistant/message') {
+    } else if (event.type === 'assistant/message' || event.type === 'assistant/attempt') {
       usageValue = data.usage;
+      // V2–V4 durable settlements carry the last reported usage in stream chunks.
+      if (!usageValue && Array.isArray(data.stream)) {
+        for (let i = data.stream.length - 1; i >= 0; i--) {
+          const item = asRecord(data.stream[i]);
+          const chunk = item?.type === 'chunk' ? asRecord(item.chunk) : item;
+          if (chunk?.type === 'usage') { usageValue = chunk.usage; break; }
+        }
+      }
     } else {
       return;
     }
@@ -276,36 +344,32 @@ function parseSessionLogChunks(chunks: Iterable<string>, fallbackSessionId = 'un
     pending = lines.pop() ?? '';
     for (const line of lines) consumeLine(line);
   }
+  // 未结束的 JSON 行不进入缓存；下次从头读取这种少见的跨帧/半行日志。
+  const resumable = pending.length === 0;
   if (pending.trim()) consumeLine(pending);
-  for (const record of records) record.sessionId = sessionId;
-  return { sessionId, records };
+  for (let i = 0; i < records.length; i += 1) {
+    if (records[i].sessionId !== sessionId) records[i] = { ...records[i], sessionId };
+  }
+  return { state: { sessionId, records, fallbackTime, provider, model, lastSample, formatVersion, invalidLines, taskState, inheriting }, resumable };
 }
 
 /** 用于明文旧日志与单元测试；压缩日志走逐帧解码。 */
 export function parseSessionLogText(text: string, fallbackSessionId?: string): ParsedSessionLog {
-  return parseSessionLogChunks([text], fallbackSessionId);
-}
-
-function parseSessionLogFile(filePath: string): ParsedSessionLog {
-  const fallbackSessionId = basename(dirname(filePath));
-  if (!filePath.toLowerCase().endsWith('.zstd')) {
-    return parseSessionLogText(readFileSync(filePath, 'utf8'), fallbackSessionId);
-  }
-  const buffer = readFileSync(filePath);
-  const frames = scanZstdFrames(buffer);
-  return parseSessionLogChunks(frames.map(({ start, end }) => (
-    zstdDecompressSync(buffer.subarray(start, end)).toString('utf8')
-  )), fallbackSessionId);
+  const { state } = parseSessionLogChunks([text], fallbackSessionId);
+  return { sessionId: state.sessionId, records: state.records, formatVersion: state.formatVersion, invalidLines: state.invalidLines };
 }
 
 interface CachedSessionLog {
   signature: string;
-  parsed: ParsedSessionLog;
+  identity: string;
+  size: number;
+  offset: number;
+  guard: string;
+  resumable: boolean;
+  state: SessionParserState;
 }
 
-const sessionLogCache = new Map<string, CachedSessionLog>();
-
-function sessionLogsRoot(env: NodeJS.ProcessEnv): string {
+export function sessionLogsRoot(env: NodeJS.ProcessEnv): string {
   const dshHome = env.DSH_HOME?.trim() ? resolve(env.DSH_HOME.trim()) : join(homedir(), '.dsh');
   return join(dshHome, 'sessions');
 }
@@ -318,62 +382,214 @@ function findSessionLogs(root: string): string[] {
     const entries = readdirSync(directory, { withFileTypes: true });
     // 迁移期间同一会话目录可能短暂同时保留明文与压缩文件；优先采用新版压缩日志，
     // 避免一条调用被两个容器重复统计。
-    const hasCompressedLog = entries.some((entry) => entry.isFile() && entry.name === 'session.jsonl.zstd');
+    const candidates = entries.filter(entry => entry.isFile() && /^session(?:\.v[1-9]\d*)?\.jsonl(?:\.zstd)?$/.test(entry.name))
+      .sort((a, b) => Number(b.name.match(/\.v(\d+)/)?.[1] ?? 0) - Number(a.name.match(/\.v(\d+)/)?.[1] ?? 0)
+        || Number(b.name.endsWith('.zstd')) - Number(a.name.endsWith('.zstd')));
+    if (candidates.length) files.push(join(directory, candidates[0].name));
     for (const entry of entries) {
       const fullPath = join(directory, entry.name);
       if (entry.isDirectory()) pending.push(fullPath);
-      else if (entry.isFile() && (
-        entry.name === 'session.jsonl.zstd'
-          || (!hasCompressedLog && entry.name === 'session.jsonl')
-      )) {
-        files.push(fullPath);
-      }
     }
   }
   return files;
 }
 
-function readAllUsageRecords(root: string): {
+interface UsageSource {
   records: RawUsageRecord[];
   scannedFileCount: number;
   skippedFileCount: number;
   updatedAt: string | null;
-} {
-  const records: RawUsageRecord[] = [];
-  let skippedFileCount = 0;
-  let updatedMillis = 0;
-  let files: string[];
-  try {
-    files = findSessionLogs(root);
-  } catch {
-    return { records, scannedFileCount: 0, skippedFileCount: 0, updatedAt: null };
-  }
-  const currentFiles = new Set(files);
-  for (const cachedPath of sessionLogCache.keys()) {
-    if (cachedPath.startsWith(root) && !currentFiles.has(cachedPath)) sessionLogCache.delete(cachedPath);
-  }
-  for (const filePath of files) {
+  unsupportedFiles: number;
+  invalidLines: number;
+  formats: number[];
+  taskEvents: UsageAnalyticsSummary['taskEvents'];
+}
+
+function digest(value: string | Buffer): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function fileIdentity(stat: Stats): string {
+  return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+}
+
+function fileSignature(stat: Stats): string {
+  return `${fileIdentity(stat)}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+}
+
+/** 一个长期驻留的索引；仅缓存用量元数据，不保留解压文本或对话正文。 */
+export class UsageLogIndex {
+  private entries = new Map<string, CachedSessionLog>();
+  private root = '';
+  private cacheFile: string | undefined;
+  lastRead = { bytesRead: 0, parsedFiles: 0, reusedFiles: 0, incrementalFiles: 0 };
+
+  constructor(private readonly cacheDirectory?: string) {}
+
+  private load(root: string): void {
+    if (this.root === root) return;
+    this.root = root;
+    this.entries.clear();
+    this.cacheFile = this.cacheDirectory ? join(this.cacheDirectory, `${digest(root)}.json`) : undefined;
+    if (!this.cacheFile) return;
     try {
-      const stat = statSync(filePath);
-      updatedMillis = Math.max(updatedMillis, stat.mtimeMs);
-      const signature = `${stat.size}:${stat.mtimeMs}`;
-      let parsed = sessionLogCache.get(filePath);
-      if (!parsed || parsed.signature !== signature) {
-        parsed = { signature, parsed: parseSessionLogFile(filePath) };
-        sessionLogCache.set(filePath, parsed);
-      }
-      records.push(...parsed.parsed.records);
+      if (statSync(this.cacheFile).size > 128 * 1024 * 1024) return;
+      const text = readFileSync(this.cacheFile, 'utf8');
+      const separator = text.indexOf('\n');
+      const payload = text.slice(separator + 1);
+      if (separator !== 64 || digest(payload) !== text.slice(0, separator)) return;
+      const saved = JSON.parse(payload);
+      if (saved.version !== 4 || !Array.isArray(saved.entries)) return;
+      this.entries = new Map(saved.entries);
     } catch {
-      skippedFileCount += 1;
+      // 缓存丢失或损坏时重建，不能影响原始会话日志。
     }
   }
-  return {
-    records,
-    scannedFileCount: files.length - skippedFileCount,
-    skippedFileCount,
-    updatedAt: updatedMillis ? new Date(updatedMillis).toISOString() : null,
-  };
+
+  private save(): void {
+    if (!this.cacheFile) return;
+    try {
+      mkdirSync(dirname(this.cacheFile), { recursive: true });
+      const payload = JSON.stringify({ version: 4, entries: [...this.entries] });
+      writeFileSync(`${this.cacheFile}.tmp`, `${digest(payload)}\n${payload}`, { mode: 0o600 });
+      renameSync(`${this.cacheFile}.tmp`, this.cacheFile);
+    } catch {
+      // 磁盘缓存不可写时仍使用内存索引。
+    }
+  }
+
+  /** Only our disposable metadata index is invalidated. Source logs are never changed. */
+  rebuild(): void { this.entries.clear(); this.save(); }
+  cacheBytes(): number { try { return this.cacheFile ? statSync(this.cacheFile).size : 0; } catch { return 0; } }
+
+  private readBytes(fd: number, start: number, size: number): Buffer {
+    const buffer = Buffer.allocUnsafe(size);
+    let count = 0;
+    while (count < size) {
+      const read = readSync(fd, buffer, count, size - count, start + count);
+      if (!read) throw new Error('日志正在截断或替换，请刷新重试');
+      count += read;
+    }
+    this.lastRead.bytesRead += count;
+    return buffer;
+  }
+
+  private guard(fd: number, end: number): string {
+    const size = Math.min(4096, end);
+    return createHash('sha256')
+      .update(this.readBytes(fd, 0, size))
+      .update(this.readBytes(fd, end - size, size))
+      .digest('hex');
+  }
+
+  private parse(filePath: string, previous?: CachedSessionLog): CachedSessionLog {
+    const fd = openSync(filePath, 'r');
+    try {
+      const stat = fstatSync(fd);
+      const incremental = previous?.resumable
+        && fileIdentity(stat) === previous.identity
+        && stat.size > previous.size
+        && this.guard(fd, previous.offset) === previous.guard;
+      let offset = incremental ? previous.offset : 0;
+      const compressed = filePath.toLowerCase().endsWith('.zstd');
+      const reader = this;
+      function* chunks(): Generator<string> {
+        let pending = Buffer.alloc(0);
+        const decoder = new StringDecoder('utf8');
+        for (let position = offset; position < stat.size;) {
+          const chunk = reader.readBytes(fd, position, Math.min(256 * 1024, stat.size - position));
+          position += chunk.length;
+          if (!compressed) {
+            offset = position;
+            yield decoder.write(chunk);
+            continue;
+          }
+          const buffer = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+          const frames = scanZstdFrames(buffer);
+          let consumed = 0;
+          // 逐帧释放解压文本，避免一次展开整场会话产生数百 MB 的临时对象。
+          for (const frame of frames) {
+            yield decoder.write(zstdDecompressSync(buffer.subarray(frame.start, frame.end)));
+            consumed = frame.end;
+          }
+          offset += consumed;
+          pending = Buffer.from(buffer.subarray(consumed));
+        }
+        yield decoder.end();
+      }
+      const result = parseSessionLogChunks(chunks(), basename(dirname(filePath)), incremental ? previous.state : undefined);
+      const after = fstatSync(fd);
+      if (after.size < stat.size || (after.size === stat.size && after.mtimeMs !== stat.mtimeMs)) {
+        throw new Error('日志正在替换，请刷新重试');
+      }
+      this.lastRead.parsedFiles += 1;
+      if (incremental) this.lastRead.incrementalFiles += 1;
+      return {
+        signature: fileSignature(stat), identity: fileIdentity(stat), size: stat.size,
+        offset, guard: this.guard(fd, offset), ...result,
+      };
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  read(rootValue: string): UsageSource {
+    const root = resolve(rootValue);
+    this.load(root);
+    this.lastRead = { bytesRead: 0, parsedFiles: 0, reusedFiles: 0, incrementalFiles: 0 };
+    const records: RawUsageRecord[] = [];
+    let skippedFileCount = 0;
+    let unsupportedFiles = 0, invalidLines = 0;
+    const formats = new Set<number>();
+    const taskEvents: UsageAnalyticsSummary['taskEvents'] = [];
+    let updatedMillis = 0;
+    let files: string[];
+    try {
+      files = findSessionLogs(root);
+    } catch (error) {
+      return { records, scannedFileCount: 0, skippedFileCount: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 0 : 1, updatedAt: null, unsupportedFiles, invalidLines, formats: [], taskEvents };
+    }
+    // 文件路径只用于计算缓存键，磁盘缓存不记录工作目录。
+    const currentFiles = new Set(files.map(digest));
+    let changed = false;
+    for (const key of this.entries.keys()) {
+      if (!currentFiles.has(key)) { this.entries.delete(key); changed = true; }
+    }
+    for (const filePath of files) {
+      try {
+        const stat = statSync(filePath);
+        const fileVersion = Number(basename(filePath).match(/\.v(\d+)/)?.[1] ?? 0);
+        if (fileVersion > 4) { unsupportedFiles++; formats.add(fileVersion); continue; }
+        updatedMillis = Math.max(updatedMillis, stat.mtimeMs);
+        const key = digest(filePath);
+        let cached = this.entries.get(key);
+        if (!cached || cached.signature !== fileSignature(stat)) {
+          cached = this.parse(filePath, cached);
+          this.entries.set(key, cached);
+          changed = true;
+        } else {
+          this.lastRead.reusedFiles += 1;
+        }
+        formats.add(cached.state.formatVersion ?? fileVersion);
+        if ((cached.state.formatVersion ?? 0) > 4) { unsupportedFiles++; continue; }
+        invalidLines += cached.state.invalidLines ?? 0;
+        if (cached.state.taskState) taskEvents.push({ sessionId: cached.state.sessionId, ...cached.state.taskState });
+        // 不使用展开参数，长会话也不会触发 maximum call stack size。
+        for (const record of cached.state.records) records.push(record);
+      } catch {
+        skippedFileCount += 1;
+      }
+    }
+    if (changed) this.save();
+    return {
+      records, scannedFileCount: files.length - skippedFileCount - unsupportedFiles, skippedFileCount,
+      unsupportedFiles, invalidLines, formats: [...formats].sort(), taskEvents,
+      updatedAt: updatedMillis ? new Date(updatedMillis).toISOString() : null,
+    };
+  }
 }
+
+const defaultLogIndex = new UsageLogIndex();
 
 export function normalizeUsageDateRange(value: unknown): UsageDateRange {
   return value === 'today' || value === '7d' || value === 'custom' ? value : '30d';
@@ -431,35 +647,6 @@ function resolveDateBounds(
     startDate: dateKey(start.getTime()),
     endDate: dateKey(endDay.getTime()),
   };
-}
-
-function recognizedPriceModel(model: string): DeepSeekPriceModel | null {
-  const normalized = model.toLowerCase();
-  if (normalized.includes('v4-pro') || normalized.includes('v4_pro')) return 'deepseek-v4-pro';
-  if (normalized.includes('vision')) return 'deepseek-v4-flash-vision-exp';
-  if (normalized.includes('deepseek') || normalized.includes('v4-flash') || normalized.includes('v4_flash')) {
-    return 'deepseek-v4-flash';
-  }
-  return null;
-}
-
-/** DeepSeek 官方高峰：北京时间 09:00–12:00、14:00–18:00。 */
-export function isDeepSeekPeakTime(time: number): boolean {
-  const beijingHour = new Date(time + 8 * 60 * 60 * 1000).getUTCHours();
-  return (beijingHour >= 9 && beijingHour < 12) || (beijingHour >= 14 && beijingHour < 18);
-}
-
-function pricesForRecord(
-  record: RawUsageRecord,
-  pricing: ReturnType<typeof normalizePricingRequest>,
-): { prices: UnitPrices; fallback: boolean } {
-  if (pricing.tier === 'custom') return { prices: pricing.prices, fallback: false };
-  const recognized = recognizedPriceModel(record.model);
-  const model = recognized ?? pricing.model;
-  const officialTier = pricing.tier === 'official-auto'
-    ? (isDeepSeekPeakTime(record.time) ? 'peak' : 'offpeak')
-    : pricing.tier === 'official-offpeak' ? 'offpeak' : 'peak';
-  return { prices: { ...DEEPSEEK_PRICES[model][officialTier] }, fallback: recognized === null };
 }
 
 function addTotals(target: UsageTotals, source: UsageTotals): void {
@@ -527,7 +714,10 @@ export function getUsageAnalytics(
   requestValue: unknown,
   root: string = sessionLogsRoot(env),
   now: number = Date.now(),
+  index: UsageLogIndex = defaultLogIndex,
+  includeAllRecords = false,
 ): UsageAnalyticsSummary {
+  const started = performance.now();
   const request = asRecord(requestValue) ?? {};
   const range = normalizeUsageDateRange(request.range);
   const bounds = resolveDateBounds(range, request, now);
@@ -535,7 +725,11 @@ export function getUsageAnalytics(
   const requestedRecentPage = positiveInteger(request.recentPage, 1);
   const recentPageSize = normalizeRecentPageSize(request.recentPageSize);
   const pricing = normalizePricingRequest(request.pricing);
-  const source = readAllUsageRecords(root);
+  const priceRules = validatePriceRules(request.priceRules);
+  const sessionFilter = typeof request.sessionFilter === 'string' ? request.sessionFilter : '';
+  const warnings = new Set<string>();
+  const source = index.read(root);
+  const priceSimulation = asRecord(request.pricing)?.currentPrices === true;
   const availableModelMap = new Map<string, { key: string; provider: string; model: string }>();
   for (const record of source.records) {
     const key = modelKey(record.provider, record.model);
@@ -551,6 +745,7 @@ export function getUsageAnalytics(
     record.time >= bounds.start
       && record.time <= bounds.end
       && (modelFilter === 'all' || modelKey(record.provider, record.model) === modelFilter)
+      && (!sessionFilter || record.sessionId === sessionFilter)
   ));
 
   const totals = { ...ZERO_TOTALS };
@@ -559,13 +754,14 @@ export function getUsageAnalytics(
   let fallbackPriceCount = 0;
   for (const record of selected) {
     addTotals(totals, record);
-    const resolved = pricesForRecord(record, pricing);
-    if (resolved.fallback) fallbackPriceCount += 1;
+    const resolved = resolveRecordPrice(record, pricing, priceRules, priceSimulation);
+    if (resolved.unpriced) fallbackPriceCount += 1;
+    if (resolved.warning) warnings.add(resolved.warning);
     const estimate = estimateDeepSeekCost(record, resolved.prices);
     breakdown.cacheHitCny += estimate.cacheHitCny;
     breakdown.cacheMissCny += estimate.cacheMissCny;
     breakdown.outputCny += estimate.outputCny;
-    records.push({ ...record, estimatedCny: estimate.totalCny });
+    records.push({ ...record, estimatedCny: estimate.totalCny, priceRule: resolved.rule, unpriced: resolved.unpriced });
   }
   const estimatedCny = breakdown.cacheHitCny + breakdown.cacheMissCny + breakdown.outputCny;
   const trend = emptyTrend(range, now, bounds.start, bounds.end);
@@ -594,6 +790,7 @@ export function getUsageAnalytics(
         requestCount: 0,
         totalTokens: 0,
         estimatedCny: 0,
+        unpricedCount: 0,
         ...ZERO_TOTALS,
       };
       modelStatMap.set(groupKey, stat);
@@ -602,6 +799,7 @@ export function getUsageAnalytics(
     stat.requestCount += 1;
     stat.totalTokens += totalTokens(record);
     stat.estimatedCny += record.estimatedCny;
+    if (record.unpriced) stat.unpricedCount++;
 
     let sessionStat = sessionStatMap.get(record.sessionId);
     if (!sessionStat) {
@@ -613,6 +811,7 @@ export function getUsageAnalytics(
         totalTokens: 0,
         estimatedCny: 0,
         lastActiveAt: 0,
+        unpricedCount: 0,
         ...ZERO_TOTALS,
       };
       sessionStatMap.set(record.sessionId, sessionStat);
@@ -623,6 +822,7 @@ export function getUsageAnalytics(
     sessionStat.requestCount += 1;
     sessionStat.totalTokens += totalTokens(record);
     sessionStat.estimatedCny += record.estimatedCny;
+    if (record.unpriced) sessionStat.unpricedCount++;
     sessionStat.lastActiveAt = Math.max(sessionStat.lastActiveAt, record.time);
   }
   const promptTokens = totals.uncachedInputTokens + totals.cacheReadTokens + totals.cacheWriteTokens;
@@ -635,6 +835,19 @@ export function getUsageAnalytics(
   const recentPageCount = Math.max(1, Math.ceil(recentRecordTotal / recentPageSize));
   const recentPage = Math.min(requestedRecentPage, recentPageCount);
   const recentOffset = (recentPage - 1) * recentPageSize;
+  const previousStart = bounds.start - (bounds.end - bounds.start + 1);
+  const previousTotals = { ...ZERO_TOTALS };
+  let previousCost = 0, previousCount = 0, previousUnpriced = 0;
+  for (const record of source.records) {
+    if (record.time < previousStart || record.time >= bounds.start || (sessionFilter && record.sessionId !== sessionFilter)
+      || (modelFilter !== 'all' && modelKey(record.provider, record.model) !== modelFilter)) continue;
+    previousCount++; addTotals(previousTotals, record);
+    const price = resolveRecordPrice(record, pricing, priceRules, priceSimulation);
+    if (price.unpriced) previousUnpriced++; else previousCost += estimateDeepSeekCost(record, price.prices).totalCny;
+  }
+  const previousPrompt = previousTotals.uncachedInputTokens + previousTotals.cacheReadTokens + previousTotals.cacheWriteTokens;
+  const previousHitRate = previousPrompt ? previousTotals.cacheReadTokens / previousPrompt : 0;
+  const previousTokens = totalTokens(previousTotals);
   return {
     sourceFound: source.scannedFileCount > 0,
     updatedAt: source.updatedAt,
@@ -660,7 +873,7 @@ export function getUsageAnalytics(
     trend,
     modelStats,
     sessionStats,
-    recentRecords: sortedRecentRecords.slice(recentOffset, recentOffset + recentPageSize),
+    recentRecords: includeAllRecords ? sortedRecentRecords : sortedRecentRecords.slice(recentOffset, recentOffset + recentPageSize),
     recentRecordTotal,
     recentPage,
     recentPageSize,
@@ -669,5 +882,20 @@ export function getUsageAnalytics(
     skippedFileCount: source.skippedFileCount,
     pricingUrl: PRICING_URL,
     priceVerifiedOn: PRICE_VERIFIED_ON,
+    sessionFilter,
+    ruleVersion: RULE_VERSION,
+    customPriceRules: priceRules,
+    unpricedCount: fallbackPriceCount,
+    warnings: [...warnings],
+    taskEvents: source.taskEvents,
+    priceSimulation,
+    comparison: { start: new Date(previousStart).toISOString(), end: new Date(bounds.start - 1).toISOString(), requestCount: previousCount,
+      totalTokens: previousTokens, estimatedCny: previousCost, unpricedCount: previousUnpriced, cacheHitRate: previousHitRate,
+      tokenChangeRatio: previousTokens ? (totalTokens(totals) - previousTokens) / previousTokens : null,
+      costChangeRatio: previousCost && !previousUnpriced && !fallbackPriceCount ? (estimatedCny - previousCost) / previousCost : null,
+      cacheHitChangePoints: (promptTokens ? totals.cacheReadTokens / promptTokens : 0) * 100 - previousHitRate * 100 },
+    completeness: source.skippedFileCount || source.unsupportedFiles || source.invalidLines ? 'partial' : source.scannedFileCount ? 'complete' : 'empty',
+    indexStatus: { ...index.lastRead, durationMs: Math.round(performance.now() - started), cacheBytes: index.cacheBytes(),
+      unsupportedFiles: source.unsupportedFiles, invalidLines: source.invalidLines, formats: source.formats },
   };
 }

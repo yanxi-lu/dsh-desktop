@@ -67,9 +67,9 @@ describe('Harness 用量与价格估算', () => {
       expect(summary.priceModel).toBe('deepseek-v4-flash');
       expect(summary.priceTier).toBe('official-peak');
       expect(summary.prices).toEqual({
-        cacheHitPerMillionCny: 0.1,
-        cacheMissPerMillionCny: 3,
-        outputPerMillionCny: 9,
+        cacheHitPerMillionCny: 0.04,
+        cacheMissPerMillionCny: 2,
+        outputPerMillionCny: 8,
       });
       expect(summary.sessionCount).toBe(2);
       expect(summary.estimatedCny).toBeGreaterThan(0);
@@ -86,7 +86,7 @@ describe('Harness 用量与价格估算', () => {
     })).toMatchObject({
       model: 'deepseek-v4-flash-vision-exp',
       tier: 'official-offpeak',
-      prices: { cacheHitPerMillionCny: 0.05, cacheMissPerMillionCny: 1.5, outputPerMillionCny: 4.5 },
+      prices: { cacheHitPerMillionCny: 0.02, cacheMissPerMillionCny: 1, outputPerMillionCny: 4 },
     });
     expect(normalizePricingRequest({
       model: 'deepseek-v4-pro',

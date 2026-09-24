@@ -74,7 +74,7 @@
     </div>
     <div id="status" title="">服务运行中</div>
     <div class="actions">
-      <button id="management" title="查看 token 用量、预估价格和可安装版本">用量/版本</button>
+      <button id="management" title="用量、预算、会话、插件、更新与诊断">工作台</button>
       <button id="updateDsh" class="primary" title="从 DeepSeek 官方 npm 发布源安装最新版 Harness">更新 <span class="button-detail">官方 Harness</span></button>
       <button id="restartDsh" title="只重启 DeepSeek Harness 服务">重启 <span class="button-detail">Harness</span></button>
       <button id="restartApp" title="重启整个桌面应用">重启<span class="button-detail">应用</span></button>
@@ -107,10 +107,12 @@
       const info = await window.dshApp.getInfo();
       elements.appVersion.textContent = info.appVersion;
       elements.dshVersion.textContent = info.dshVersion || '未安装';
-      if (info.dshVersion && info.latestDshVersion && info.dshVersion !== info.latestDshVersion) {
+      if (info.updateAvailable) {
         showStatus(`官方 Harness ${info.latestDshVersion} 可更新`, 'busy');
+      } else if (info.dshVersion && info.latestDshVersion === info.dshVersion) {
+        showStatus(`当前匹配 npm latest (${info.dshVersion})`, 'ok');
       } else if (info.dshVersion && info.latestDshVersion) {
-        showStatus(`官方 Harness 已是最新版(${info.dshVersion})`, 'ok');
+        showStatus(`当前 ${info.dshVersion} · npm latest ${info.latestDshVersion}（不同发布通道）`, 'ok');
       }
     }
 

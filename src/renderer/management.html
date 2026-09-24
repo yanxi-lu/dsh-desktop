@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>DeepSeek Harness 用量与版本管理</title>
+  <title>DeepSeek Harness 工作台</title>
   <style>
     * { box-sizing: border-box; }
     :root { color-scheme: light; }
@@ -152,10 +152,11 @@
       .balance-query { align-items: stretch; flex-direction: column; }
     }
   </style>
+  <link rel="stylesheet" href="workbench.css" />
 </head>
 <body>
   <header>
-    <h1>用量统计与版本管理</h1>
+    <h1>DeepSeek Harness <span class="header-caption">桌面工作台</span></h1>
   </header>
   <main>
     <section>
@@ -163,9 +164,9 @@
         <h2>Token 用量概览</h2>
         <div class="controls">
           <select id="dateRange" aria-label="统计时间范围">
-            <option value="today">今天</option>
+            <option value="today" selected>今天</option>
             <option value="7d">近 7 天</option>
-            <option value="30d" selected>近 30 天</option>
+            <option value="30d">近 30 天</option>
             <option value="custom">自定义范围</option>
           </select>
           <div id="customDateRange" class="date-range-fields" hidden>
@@ -273,6 +274,14 @@
               <tbody id="sessionStatsBody"></tbody>
             </table>
           </div>
+          <div class="pagination">
+            <span id="sessionRecordTotal" class="subpanel-note">共 0 个会话 · 每页 25 个</span>
+            <div class="pagination-controls">
+              <button id="sessionPrev" disabled>上一页</button>
+              <span id="sessionPageInfo" class="page-info">第 1 / 1 页</span>
+              <button id="sessionNext" disabled>下一页</button>
+            </div>
+          </div>
         </div>
       </div>
       <p class="hint">为保护隐私，本页只提取时间、Provider、模型和 Token 用量，不保存、不返回或展示提示词及回答正文。Harness 日志没有稳定的 HTTP 状态与延迟字段，因此不展示没有数据支撑的成功率或响应耗时。</p>
@@ -284,10 +293,10 @@
         <button id="pricingDocs">查看官方定价</button>
       </div>
       <div class="controls" style="margin-bottom:16px">
-        <select id="priceModel" aria-label="未知模型的兜底估价模型">
-          <option value="deepseek-v4-flash">未知模型按 DeepSeek-V4-Flash-0731</option>
-          <option value="deepseek-v4-pro">未知模型按 DeepSeek-V4-Pro-0813</option>
-          <option value="deepseek-v4-flash-vision-exp">未知模型按 DeepSeek-V4-Flash-Vision-Exp</option>
+        <select id="priceModel" aria-label="参考单价模型">
+          <option value="deepseek-v4-flash">Flash 参考单价</option>
+          <option value="deepseek-v4-pro">Pro 参考单价</option>
+          <option value="deepseek-v4-flash-vision-exp">Flash Vision 别名参考</option>
         </select>
         <select id="priceTier" aria-label="价格时段或方案">
           <option value="official-auto">官方价格（按调用时间自动）</option>
@@ -302,7 +311,7 @@
         <label>输出（元/百万）<input id="customOutput" type="number" min="0" max="1000000" step="0.001" /></label>
         <button id="saveCustom" class="primary">保存并计算</button>
       </div>
-      <p class="hint">自动模式会根据每条调用记录的北京时间选择 09:00–12:00、14:00–18:00 高峰价，其余使用空闲价；同时按日志中的实际模型匹配价格。无法识别的模型才使用上面的兜底选项。估算值不等于官方账单，思考 tokens 已包含在输出中，不重复相加。</p>
+      <p class="hint">按调用日期匹配历史价目：2026-08-17 起的 V4 价格，以及 2026-09-10 12:00 起的 V4.1 Flash 价格。高峰为北京时间工作日 09:00–12:00、14:00–18:00，周末和已维护的 2026 年节假日按空闲价。未知模型/提供商单列待定价，不再套用 Flash。按模型自定义规则优先。预估不是官方账单。</p>
     </section>
 
     <section>
@@ -316,7 +325,7 @@
         <button id="installVersion" class="primary" disabled>安装所选版本</button>
       </div>
       <p id="operation"></p>
-      <p class="hint">版本来自官方 npm 包 <code>@deepseek-ai/dsh</code>。可以升级、重装或回退；切换时桌面壳会停止当前服务，安装完成后自动重启。</p>
+      <p class="hint">版本来自官方 npm 包 <code>@deepseek-ai/dsh</code>。latest 是发布标签，不保证为正式版。下载到独立目录并校验后，暂停服务、备份数据再切换；备份仅存本机，可能包含凭据。有运行任务时排队更新。不会把 GitHub 上未发布到 npm 的源码标签作为可安装版本。</p>
     </section>
   </main>
   <script src="vendor/echarts.min.js"></script>
@@ -328,6 +337,7 @@
       'cachedCost', 'uncachedTable', 'uncachedRate', 'uncachedCost', 'outputTable', 'outputRate',
       'outputCost', 'usageMeta', 'trendChart', 'trendGranularity', 'modelStatsBody', 'recentBody', 'recentRecordTotal', 'recentPageSize', 'recentPrev', 'recentNext', 'recentPageInfo', 'sessionStatsBody', 'refreshVersions',
       'currentVersion', 'latestVersion', 'versionSelect', 'installVersion', 'operation',
+      'sessionRecordTotal', 'sessionPrev', 'sessionNext', 'sessionPageInfo',
     ];
     const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
     const tokenFormatter = new Intl.NumberFormat('zh-CN');
@@ -335,6 +345,11 @@
     let trendChart = null;
     let recentPage = 1;
     let recentPageCount = 1;
+    let sessionPage = 1;
+    let sessionStats = [];
+    let trendSignature = '';
+    let usageRequestVersion = 0;
+    let usageRunning = false;
 
     function tokens(value) { return tokenFormatter.format(value || 0); }
     function money(value) {
@@ -458,7 +473,7 @@
         outputPerMillionCny: Number(el.customOutput.value),
       };
     }
-    function currentPricing() { return { model: el.priceModel.value, tier: el.priceTier.value, customPrices: customPriceValues() }; }
+    function currentPricing() { return { model: el.priceModel.value, tier: el.priceTier.value, customPrices: customPriceValues(), currentPrices: document.getElementById('simulateCurrent')?.checked === true }; }
     function savePricing() {
       const pricing = currentPricing();
       try { localStorage.setItem(pricingStorageKey, JSON.stringify(pricing)); } catch { /* 当前计算仍可继续 */ }
@@ -486,6 +501,8 @@
       return String(Math.round(value));
     }
     function renderTrend(points) {
+      const signature = JSON.stringify(points);
+      if (signature === trendSignature && trendChart) return;
       if (!window.echarts) {
         el.trendChart.textContent = '图表组件加载失败，请重新安装桌面应用。';
         return;
@@ -499,7 +516,9 @@
       ];
       const hasData = points.some((point) => point.requestCount > 0 || point.totalTokens > 0);
       const option = {
-        animationDuration: 900,
+        animation: points.length <= 90,
+        animationDuration: 350,
+        animationDurationUpdate: 200,
         animationEasing: 'cubicInOut',
         color: [...seriesConfig.map((item) => item.color), '#ff4f72'],
         grid: { left: 72, right: 76, top: 42, bottom: 68, containLabel: false },
@@ -625,7 +644,8 @@
           },
         ],
       };
-      trendChart.setOption(option, { notMerge: true });
+      trendChart.setOption(option, { notMerge: true, lazyUpdate: true });
+      trendSignature = signature;
     }
 
     function renderModelStats(stats) {
@@ -638,7 +658,7 @@
         appendCell(row, tokens(stat.requestCount));
         appendCell(row, tokens(stat.totalTokens));
         appendCell(row, percent(prompt > 0 ? stat.cacheReadTokens / prompt : 0));
-        appendCell(row, money(stat.estimatedCny));
+        appendCell(row, stat.unpricedCount === stat.requestCount ? '待定价' : `${money(stat.estimatedCny)}${stat.unpricedCount ? '（部分）' : ''}`);
         el.modelStatsBody.append(row);
       }
     }
@@ -662,7 +682,7 @@
         appendCell(row, new Date(record.time).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }));
         appendCell(row, record.model);
         appendCell(row, tokens(total));
-        appendCell(row, money(record.estimatedCny));
+        appendCell(row, record.unpriced ? '待定价' : money(record.estimatedCny));
         el.recentBody.append(row);
       }
     }
@@ -672,10 +692,17 @@
       return `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}`;
     }
     function renderSessionStats(stats) {
+      sessionStats = stats;
+      const pageCount = Math.max(1, Math.ceil(stats.length / 25));
+      sessionPage = Math.min(sessionPage, pageCount);
+      el.sessionRecordTotal.textContent = `共 ${tokens(stats.length)} 个会话 · 每页 25 个`;
+      el.sessionPageInfo.textContent = `第 ${sessionPage} / ${pageCount} 页`;
+      el.sessionPrev.disabled = sessionPage <= 1;
+      el.sessionNext.disabled = sessionPage >= pageCount;
       if (!stats.length) return emptyTable(el.sessionStatsBody, 11, '当前筛选范围暂无会话用量');
-      el.sessionStatsBody.replaceChildren();
-      const maxTokens = Math.max(1, ...stats.map((stat) => stat.totalTokens));
-      for (const stat of stats) {
+      const fragment = document.createDocumentFragment();
+      const maxTokens = stats.reduce((max, stat) => Math.max(max, stat.totalTokens), 1);
+      for (const stat of stats.slice((sessionPage - 1) * 25, sessionPage * 25)) {
         const row = document.createElement('tr');
         const prompt = stat.uncachedInputTokens + stat.cacheReadTokens + stat.cacheWriteTokens;
         appendCell(row, shortSessionId(stat.sessionId), { className: 'session-id', title: stat.sessionId });
@@ -694,9 +721,10 @@
         share.append(fill);
         totalCell.append(share);
         appendCell(row, percent(prompt > 0 ? stat.cacheReadTokens / prompt : 0));
-        appendCell(row, money(stat.estimatedCny));
-        el.sessionStatsBody.append(row);
+        appendCell(row, stat.unpricedCount === stat.requestCount ? '待定价' : `${money(stat.estimatedCny)}${stat.unpricedCount ? '（部分）' : ''}`);
+        fragment.append(row);
       }
+      el.sessionStatsBody.replaceChildren(fragment);
     }
     function updateModelFilter(summary) {
       const selected = summary.modelFilter || 'all';
@@ -712,12 +740,14 @@
       el.modelFilter.value = selected;
     }
     function renderUsage(summary) {
+      window.lastUsageSummary = summary;
+      window.dispatchEvent(new CustomEvent('usage-rendered', { detail: summary }));
       const t = summary.totals;
       el.requestCount.textContent = tokens(summary.requestCount);
       el.totalTokens.textContent = tokens(summary.totalTokens);
       el.cacheHitRate.textContent = percent(summary.cacheHitRate);
       el.sessionCount.textContent = tokens(summary.sessionCount);
-      el.estimated.textContent = money(summary.estimatedCny);
+      el.estimated.textContent = summary.unpricedCount && summary.unpricedCount === summary.requestCount ? '待定价' : `${money(summary.estimatedCny)}${summary.unpricedCount ? '（部分）' : ''}`;
       el.cachedTable.textContent = tokens(t.cacheReadTokens);
       el.uncachedTable.textContent = tokens(t.uncachedInputTokens + t.cacheWriteTokens);
       el.outputTable.textContent = tokens(t.outputTokens);
@@ -738,36 +768,55 @@
         : `${summary.startDate} 至 ${summary.endDate} · 按日期聚合`;
       const updated = summary.updatedAt ? new Date(summary.updatedAt).toLocaleString('zh-CN') : '暂无数据';
       const skipped = summary.skippedFileCount ? ` · ${summary.skippedFileCount} 个日志暂时无法读取` : '';
-      const fallback = summary.fallbackPriceCount ? ` · ${summary.fallbackPriceCount} 次未知模型按 ${summary.priceLabel} 估价` : '';
+      const fallback = summary.unpricedCount ? ` · ${summary.unpricedCount} 次调用待定价（未计入金额）` : '';
       el.usageMeta.textContent = summary.sourceFound
         ? `已扫描 ${summary.scannedFileCount} 个本机会话日志 · ${summary.priceTierLabel} · 数据更新时间 ${updated}${fallback}${skipped} · 官方价格核对日期 ${summary.priceVerifiedOn}`
-        : '未找到 Harness 会话日志。请先完成至少一次模型对话，或安装较新的 Harness 版本。';
+        : summary.completeness === 'partial' ? '统计不完整：发现无法读取或尚不支持的日志格式，请在诊断中查看索引状态。' : '未找到 Harness 会话日志。请先完成至少一次模型对话，或安装较新的 Harness 版本。';
+      if (summary.completeness === 'partial') el.usageMeta.textContent += ' · 统计不完整';
     }
     async function refreshUsage() {
+      usageRequestVersion += 1;
+      if (usageRunning) return;
+      usageRunning = true;
       el.refreshUsage.disabled = true;
+      el.refreshUsage.textContent = '统计中…';
+      el.usageMeta.textContent = '正在读取用量统计…';
+      el.usageMeta.setAttribute('aria-busy', 'true');
       el.applyDateRange.disabled = true;
       el.recentPageSize.disabled = true;
       el.recentPrev.disabled = true;
       el.recentNext.disabled = true;
       try {
-        const dateRequest = usageDateRequest();
-        const summary = await window.dshApp.getUsage({
-          ...dateRequest,
-          modelFilter: el.modelFilter.value,
-          recentPage,
-          recentPageSize: Number(el.recentPageSize.value),
-          pricing: currentPricing(),
-        });
-        renderUsage(summary);
-      } catch (error) { el.usageMeta.textContent = `统计读取失败：${error.message}`; }
+        let requestedVersion;
+        do {
+          requestedVersion = usageRequestVersion;
+          try {
+            const dateRequest = usageDateRequest();
+            const summary = await window.dshApp.getUsage({
+              ...dateRequest,
+              modelFilter: el.modelFilter.value,
+              recentPage,
+              recentPageSize: Number(el.recentPageSize.value),
+              pricing: currentPricing(),
+              sessionFilter: window.usageSessionFilter || '',
+            });
+            if (requestedVersion === usageRequestVersion) renderUsage(summary);
+          } catch (error) {
+            if (requestedVersion === usageRequestVersion) el.usageMeta.textContent = `统计读取失败：${error.message}`;
+          }
+        } while (requestedVersion !== usageRequestVersion);
+      }
       finally {
+        usageRunning = false;
         el.refreshUsage.disabled = false;
+        el.refreshUsage.textContent = '刷新统计';
+        el.usageMeta.setAttribute('aria-busy', 'false');
         el.applyDateRange.disabled = false;
         el.recentPageSize.disabled = false;
         updateRecentPager();
       }
     }
-    function refreshUsageFromFirstPage() { recentPage = 1; return refreshUsage(); }
+    function refreshUsageFromFirstPage() { recentPage = 1; sessionPage = 1; return refreshUsage(); }
 
     async function refreshVersions() {
       el.refreshVersions.disabled = true;
@@ -781,17 +830,19 @@
         el.versionSelect.innerHTML = '';
         const latestOption = document.createElement('option');
         latestOption.value = 'latest';
-        latestOption.textContent = info.latest ? `最新版 latest（${info.latest}）` : '最新版 latest';
+        latestOption.textContent = info.latest ? `官方 latest 标签（${info.latest}）` : '官方 latest 标签';
         el.versionSelect.append(latestOption);
         for (const version of info.versions) {
           const option = document.createElement('option');
           option.value = version;
-          option.textContent = version === info.current ? `${version}（当前）` : version;
+          const entry = info.catalog?.versions?.find(v => v.version === version);
+          option.textContent = `${version}${version === info.current ? '（当前）' : ''}${entry ? ` · ${entry.channel}` : ''}`;
           el.versionSelect.append(option);
         }
         el.versionSelect.disabled = false;
         el.installVersion.disabled = false;
         setOperation(info.versions.length > 0 ? `已获取 ${info.versions.length} 个官方版本` : '未能获取版本列表，仍可尝试安装 latest', info.versions.length > 0 ? 'ok' : 'error');
+        window.dispatchEvent(new CustomEvent('versions-rendered', { detail: info }));
       } catch (error) { setOperation(`版本列表读取失败：${error.message}`, 'error'); }
       finally { el.refreshVersions.disabled = false; }
     }
@@ -833,6 +884,8 @@
     el.recentPageSize.onchange = refreshUsageFromFirstPage;
     el.recentPrev.onclick = () => { if (recentPage > 1) { recentPage -= 1; refreshUsage(); } };
     el.recentNext.onclick = () => { if (recentPage < recentPageCount) { recentPage += 1; refreshUsage(); } };
+    el.sessionPrev.onclick = () => { if (sessionPage > 1) { sessionPage -= 1; renderSessionStats(sessionStats); } };
+    el.sessionNext.onclick = () => { if (sessionPage * 25 < sessionStats.length) { sessionPage += 1; renderSessionStats(sessionStats); } };
     el.priceModel.onchange = () => { savePricing(); refreshUsageFromFirstPage(); };
     el.priceTier.onchange = () => { showCustomPrices(); savePricing(); refreshUsageFromFirstPage(); };
     el.saveCustom.onclick = () => {
@@ -866,7 +919,11 @@
       trendChart?.dispose();
       trendChart = null;
     });
-    Promise.all([refreshUsage(), refreshVersions(), refreshBalance()]);
+    window.usagePage = { refresh: refreshUsage, refreshFirst: refreshUsageFromFirstPage, versions: refreshVersions, balance: refreshBalance,
+      request: () => ({ ...usageDateRequest(), modelFilter: el.modelFilter.value, sessionFilter: window.usageSessionFilter || '', pricing: currentPricing() }),
+      render: renderUsage, resize: () => trendChart?.resize() };
+    refreshUsage();
   </script>
+  <script src="workbench.js"></script>
 </body>
 </html>
