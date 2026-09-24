@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { config, dshUrl } from './config';
+import { spawnSupervised } from './service-supervisor';
 
 const execFileAsync = promisify(execFile);
 
@@ -159,14 +160,20 @@ export interface StreamingUpdateOptions {
   installPrefix?: string;
 }
 
-const defaultSpawn: SpawnFn = (cmd, args, opts) =>
-  new Promise((resolve, reject) => {
-    // Windows 上 dsh 是 .cmd 脚本,必须 shell:true;
-    // 命令整体加引号:shell:true 下仅字符串拼接,路径含空格会被拆断(R21)
-    const child = spawn(`"${cmd}"`, args, { ...opts, shell: true, windowsHide: true });
-    child.once('error', reject);   // spawn 失败(如 ENOENT)在此捕获
-    child.once('spawn', () => resolve(child));
-  });
+const defaultSpawn: SpawnFn = (cmd, args, opts) => spawnSupervised(cmd, args, opts.env);
+
+export function startupExitMessage(code: number | null, diagnostics: RuntimeDiagnostic[]): string {
+  const reasons = [...new Set(diagnostics.map(item => item.code))];
+  const hints: Record<string, string> = {
+    'port-in-use': `端口 ${config.port} 已被占用，请先退出旧 Harness 服务或打开工作台检查端口`,
+    'missing-module': '运行依赖缺失，可重新安装当前 Harness 版本',
+    'missing-path': '文件或目录不存在，请打开工作台检查安装路径和工作目录',
+    permission: '访问权限或文件占用异常，请打开工作台检查',
+    'plugin-error': '插件启动异常，请检查官方插件配置',
+  };
+  const detail = reasons.map(reason => hints[reason]).filter(Boolean).join('；');
+  return `dsh 服务启动过程中退出(exit code ${code ?? 'unknown'})${detail ? `：${detail}` : '，请打开工作台与诊断检查原因'}`;
+}
 
 const defaultFetch: FetchLike = async (url) => {
   const res = await fetch(url);
@@ -545,7 +552,7 @@ function captureDshLaunchUrl(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      reject(new Error(`dsh 服务输出启动地址前退出(exit code ${code ?? 'unknown'})`));
+      reject(new Error(startupExitMessage(code, diagnostics)));
     };
 
     for (const stream of streams) stream.on('data', onData);

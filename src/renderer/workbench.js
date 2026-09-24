@@ -7,9 +7,9 @@
   const oldMain = document.querySelector('main');
   const appRoot = document.createElement('div'); appRoot.className = 'workbench';
   appRoot.innerHTML = `<nav class="workbench-nav" aria-label="工作台导航">
-    <button data-tab="overview">◈　总览</button><button data-tab="usage">▥　用量与费用</button><button data-tab="sessions">▤　会话</button>
-    <button data-tab="plugins">◇　插件</button><button data-tab="updates">↻　更新与诊断</button><button data-tab="settings">⚙　设置</button>
-    <p class="nav-note">LOCAL WORKSPACE<br>本机数据 · 独立加载<br><span id="desktopVersion">桌面工作台</span></p>
+    <button data-tab="overview"><span class="nav-icon" aria-hidden="true">◈</span><span class="nav-label">总览</span></button><button data-tab="usage"><span class="nav-icon" aria-hidden="true">▥</span><span class="nav-label">用量与费用</span></button><button data-tab="sessions"><span class="nav-icon" aria-hidden="true">▤</span><span class="nav-label">会话</span></button>
+    <button data-tab="plugins"><span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">插件</span></button><button data-tab="updates"><span class="nav-icon" aria-hidden="true">↻</span><span class="nav-label">更新与诊断</span></button><button data-tab="settings"><span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-label">设置</span></button>
+    <p class="nav-note"><span>本机工作台</span><span>本机数据 · 独立加载</span><span id="desktopVersion">桌面工作台</span></p>
   </nav><div class="workbench-pages"></div>`;
   document.body.append(appRoot);
   const pages = appRoot.querySelector('.workbench-pages');
@@ -35,8 +35,8 @@
     <section><h2>从 npm 安装 / 更新插件</h2><p class="hint">输入可信的 npm 包名，可指定 @版本。先检查，再确认安装；不会自动批准依赖构建脚本。配置项仍由官方插件面板管理。</p>
     <div class="controls"><input id="pluginSpec" placeholder="@作者/插件包@版本" aria-label="npm 插件包"/><button id="inspectPlugin">检查来源与兼容性</button><button id="installPlugin" class="primary" disabled>确认安装 / 更新</button></div><pre id="pluginInspection" class="wb-status"></pre></section>`);
   makePage('updates', `<div class="wb-head"><div><p class="eyebrow">MAINTENANCE</p><h2>更新与诊断</h2></div><button id="refreshRuntime">刷新状态</button></div>
-    <div id="versionSlot"></div><section><h2>更新保护</h2><p id="runtimeInfo" class="hint">正在读取…</p><div class="wb-actions"><button id="releaseNotes">官方更新说明</button><button id="restoreSnapshot">恢复升级前快照</button><button id="cancelQueue">取消排队更新</button></div><p id="releaseTags" class="wb-status"></p>
-    <p class="notice">恢复时会创建独立数据副本，保留新版数据，不会自动合并。桌面壳自身的升级与 Harness 分开；本版不启用未配置发布源的壳自动更新。</p></section>
+    <div id="versionSlot"></div><section><h2>安装管理</h2><p id="runtimeInfo" class="hint">正在读取…</p><div class="wb-actions"><button id="releaseNotes">官方更新说明</button><button id="retryCleanup" hidden>重试清理旧安装</button><button id="cancelQueue">取消排队更新</button></div><p id="cleanupStatus" class="wb-status error" hidden></p><p id="releaseTags" class="wb-status"></p>
+    <p class="notice">新版本启动成功后只保留当前托管安装；需要旧版时，在版本列表中选择并重新安装。不再自动创建升级快照，会话与配置继续使用原数据目录。降级前请自行备份重要数据，旧版本不一定兼容新版数据。</p></section>
     <section><div class="section-head"><h2>运行诊断</h2><button id="runDiagnostics" class="primary">开始检查</button></div><p class="hint">检查环境、监听端口、目录权限和网络，不发送付费模型请求。</p><div id="diagnosticResults"></div>
     <div class="wb-actions"><button id="exportDiagnostics" disabled>导出脱敏报告</button><button id="changePort">选择可用端口并重启</button><button id="pickWorkspace">重新选择工作文件夹</button></div></section>
     <section><div class="section-head"><h2>统计索引</h2><button id="rebuildIndex">重建统计索引</button></div><p id="indexStatus" class="wb-status">首次查询后显示索引状态。</p><p class="hint">仅重建可丢弃的用量元数据缓存，不删除会话、附件或凭据。</p></section>`);
@@ -108,9 +108,14 @@
   }
   async function refreshRuntime() {
     const info = await api.overview();
-    $('runtimeInfo').textContent = `桌面壳 ${info.appVersion} · Harness ${info.runtime.version || '使用现有全局安装'} · 端口 ${info.runtime.port} · ${info.runtime.backupAvailable ? `可恢复到 ${info.runtime.previousVersion}` : '尚无升级快照'}${info.queuedUpdate ? ` · 排队：${info.queuedUpdate}` : ''}`;
-    $('restoreSnapshot').disabled = !info.runtime.backupAvailable; $('cancelQueue').disabled = !info.queuedUpdate;
+    $('runtimeInfo').textContent = `桌面壳 ${info.appVersion} · Harness ${info.runtime.version || '使用现有全局安装'} · 端口 ${info.runtime.port}${info.queuedUpdate ? ` · 排队：${info.queuedUpdate}` : ''}`;
+    $('retryCleanup').hidden = !info.runtime.cleanupWarning;
+    $('cleanupStatus').hidden = !info.runtime.cleanupWarning; $('cleanupStatus').textContent = info.runtime.cleanupWarning || '';
+    $('cancelQueue').disabled = !info.queuedUpdate;
   }
+  window.dshApp?.onOperationStatus?.(event => {
+    if (currentTab === 'updates' && event.kind !== 'busy') void refreshRuntime().catch(e => msg(e.message));
+  });
   function detail(id) { window.usageSessionFilter = id; $('clearSessionFilter').hidden = false; $('clearSessionFilter').textContent = `清除会话筛选 · ${id.slice(-10)}`; selectTab('usage'); return usage.refreshFirst(); }
   async function refreshSessionMetadata() {
     if (!prefs?.metadataEnabled) { metadata.clear(); return; }
@@ -201,7 +206,7 @@
   task('checkPluginUpdates', async () => { $('pluginStatus').textContent = '正在查询 npm 插件版本…'; const rows = await api.pluginUpdates(); pluginVersions = new Map(rows.map(r => [r.name, r])); renderPlugins(); $('pluginStatus').textContent = `发现 ${rows.filter(r => r.newer).length} 个可更新 · ${rows.filter(r => r.error).length} 个查询失败`; });
   task('discoverPlugins', async () => { $('discoveryResults').textContent = '正在搜索公共 npm 目录…'; const rows = await api.searchPlugins($('discoverQuery').value.trim()); $('discoveryResults').replaceChildren(); for (const p of rows) { const card = node('div', '', 'plugin-card'); card.append(node('strong', `${p.name} · ${p.version}`), node('p', p.description), node('p', `作者 ${p.author || '未提供'} · 许可证 ${p.license} · ${p.source}`), action('选择并检查', () => { $('pluginSpec').value = `${p.name}@${p.version}`; $('pluginSpec').dispatchEvent(new Event('input')); $('inspectPlugin').click(); $('pluginSpec').scrollIntoView({ behavior: 'smooth', block: 'center' }); })); $('discoveryResults').append(card); } if (!rows.length) $('discoveryResults').textContent = '暂无匹配结果'; });
   task('refreshRuntime', refreshRuntime); task('releaseNotes', () => api.releaseNotes($('versionSelect').value || 'latest')); task('cancelQueue', async () => { await api.cancelQueue(); await refreshRuntime(); });
-  task('restoreSnapshot', async () => { const result = await api.restore(); if (result.ok) { msg('已恢复到升级前数据副本'); await refreshRuntime(); await usage.refresh(); } });
+  task('retryCleanup', async () => { const result = await api.retryCleanup(); if (!result.cancelled) msg(result.warning || `已清理 ${result.removed} 个旧安装`); await refreshRuntime(); });
   task('runDiagnostics', async () => { $('diagnosticResults').textContent = '正在检查环境与网络…'; const report = await api.diagnose(); $('diagnosticResults').replaceChildren(); for (const item of report.items) { const row = node('div', '', 'diagnostic'); row.append(node('strong', `${item.status === 'ok' ? '✓' : '!'} ${item.name}`, item.status), node('p', item.detail), node('p', item.action, 'hint')); $('diagnosticResults').append(row); } $('exportDiagnostics').disabled = false; });
   task('exportDiagnostics', async () => { const result = await api.exportDiagnostics(); if (result.ok) msg(`已导出脱敏报告：${result.path}`); });
   task('changePort', async () => { const result = await api.changePort(); if (!result.cancelled) msg(result.ok ? '端口已更换，服务已重启' : result.error); await refreshRuntime(); });

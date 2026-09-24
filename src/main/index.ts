@@ -8,8 +8,8 @@ import { randomUUID } from 'node:crypto';
 import { config } from './config';
 import { PreferencesStore } from './preferences';
 import { HarnessBridge, redact } from './harness-bridge';
-import { ManagedInstall, snapshotTree } from './managed-install';
-import { diagnose, availablePort, safeDiagnosticReport } from './diagnostics';
+import { ManagedInstall, snapshotTree, type Installation } from './managed-install';
+import { diagnose, availablePort, assertPortAvailable, safeDiagnosticReport } from './diagnostics';
 import { getReleaseCatalog, RELEASES_URL } from './releases';
 import { searchPlugins, pluginUpdates } from './plugin-catalog';
 import { AlertLedger, budgetAlerts, type DesktopAlert } from './notifications';
@@ -22,6 +22,7 @@ import {
   getLatestDshVersion,
   normalizeDshTargetVersion,
   isNewerVersion,
+  startupExitMessage,
 } from './dsh';
 import type { StartedDsh } from './dsh';
 import type { RuntimeDiagnostic } from './dsh';
@@ -52,6 +53,8 @@ if (!gotLock) {
   let managementWindow: BrowserWindow | null = null;
   let dshProc: StartedDsh | null = null;
   let quitting = false;
+  let exitCleanup: Promise<void> | null = null;
+  let exitCleanupDone = false;
   let tray: Tray | null = null;
   let exitWatchCleanup: (() => void) | null = null;
   let launching = false;
@@ -161,7 +164,10 @@ if (!gotLock) {
 
   function broadcast(channel: string, payload: unknown): void {
     for (const win of allWindows()) {
-      if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+      if (!win || win.isDestroyed()) continue;
+      const send = (): void => { if (!win.isDestroyed()) win.webContents.send(channel, payload); };
+      if (win.webContents.isLoadingMainFrame()) win.webContents.once('did-finish-load', send);
+      else send();
     }
   }
 
@@ -170,7 +176,7 @@ if (!gotLock) {
     kind: 'busy' | 'ok' | 'error' = 'busy',
     dshVersion?: string,
   ): void {
-    broadcast('dsh:operation-status', { message: redact(message), kind, dshVersion });
+    broadcast('dsh:operation-status', { message: redact(message), kind, dshVersion, canCancelInstall: !!dshUpdateAbortController });
   }
 
   function showCurrentWindow(): void {
@@ -185,11 +191,6 @@ if (!gotLock) {
 
   /** 完整启动流程:检测 → spawn → 就绪 → 主窗。 */
   async function launch(): Promise<void> {
-    if (managed.info().pending) {
-      loadingWindow = createLoadingWindow(preloadPath);
-      if (managed.info().backupAvailable) await managed.restore(message => reportOperation(message)); else await managed.confirm();
-      renewUsage();
-    }
     const status = await detectAll(managed.env());
     if (!status.node || !status.dsh) {
       openOnboarding();
@@ -199,6 +200,7 @@ if (!gotLock) {
   }
 
   async function startService(onProgress?: (message: string) => void): Promise<void> {
+    await assertPortAvailable(config.port, config.host);
     const started = await startDsh(managed.env());
     runtimeDiagnostics = started.diagnostics ?? [];
     dshProc = started;
@@ -211,7 +213,7 @@ if (!gotLock) {
     const earlyExit = new Promise<never>((_resolve, reject) => {
       onEarlyExit = (code: number | null): void => {
         if (dshProc?.proc === started.proc) dshProc = null;
-        reject(new Error(`dsh 服务启动过程中退出(exit code ${code ?? 'unknown'})`));
+        reject(new Error(startupExitMessage(code, runtimeDiagnostics)));
       };
       started.proc.once('exit', onEarlyExit);
     });
@@ -245,12 +247,13 @@ if (!gotLock) {
       closeWindow(loadingWindow);
       closeWindow(onboardingWindow);
       openMainWindow();
+      const cleanup = await managed.confirm();
+      if (cleanup.warning) reportOperation(cleanup.warning, 'error');
       return { ok: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (loadingWindow && !loadingWindow.isDestroyed()) {
-        loadingWindow.webContents.send('dsh:error', message);
-      }
+      broadcast('dsh:error', redact(message));
+      reportOperation(`Harness 启动失败:${message}`, 'error');
       return { ok: false, error: message };
     } finally {
       launching = false;
@@ -294,7 +297,9 @@ if (!gotLock) {
       reportOperation('正在启动 Harness 服务…');
       await startService((message) => reportOperation(message));
       await showRunningMain();
-      reportOperation('Harness 服务重启成功', 'ok');
+      reportOperation('Harness 已启动，正在检查旧的托管安装…');
+      const cleanup = await managed.confirm();
+      reportOperation(`Harness 服务重启成功${cleanup.warning ? `；${cleanup.warning}` : ''}`, cleanup.warning ? 'error' : 'ok');
       return { ok: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -303,7 +308,7 @@ if (!gotLock) {
     }
   }
 
-  /** 一键安装最新版 dsh;更新前停服务,更新后自动恢复。 */
+  /** 先下载校验，再停止服务切换；启动成功后只保留当前托管安装。 */
   async function updateDshVersion(targetValue: unknown = 'latest'): Promise<{ ok: boolean; version?: string; error?: string }> {
     let targetVersion: string;
     try {
@@ -317,7 +322,7 @@ if (!gotLock) {
     dshUpdateAbortController = abortController;
     const hadRunningService = Boolean(dshProc?.proc.pid);
     let activated = false;
-    let restored = false;
+    let staged: Installation | undefined;
     let manualIdleConfirmed = false;
     try {
       if (dshProc) {
@@ -326,7 +331,7 @@ if (!gotLock) {
           if (running.length) { queuedUpdate = targetVersion; reportOperation(`有 ${running.length} 个会话运行中，已排队，任务结束后更新`); return { ok: false, error: '已加入更新队列；任务结束后自动执行，可在更新中心取消' }; }
         } catch {
           const choice = await dialog.showMessageBox({ type: 'warning', buttons: ['取消', '确认无运行任务，继续'], defaultId: 0, cancelId: 0,
-            message: '当前版本无法查询任务状态', detail: '升级会停止 Harness。请确认没有正在执行的任务，下载期间不要启动新任务。升级前会备份数据到本机，备份含凭据，不会上传。' });
+            message: '当前版本无法查询任务状态', detail: '升级会停止 Harness。请确认没有正在执行的任务，下载期间不要启动新任务。不再自动创建升级快照；重要数据请先自行备份。' });
           if (choice.response !== 1) return { ok: false, error: '已取消升级' };
           manualIdleConfirmed = true;
         }
@@ -336,13 +341,13 @@ if (!gotLock) {
       const selectedVersion = targetVersion === 'latest' ? (await getReleaseCatalog()).tags.latest : targetVersion;
       if (!selectedVersion) throw new Error('官方 npm 没有返回 latest 目标版本，请刷新版本列表');
       if (oldVersion && isNewerVersion(oldVersion, selectedVersion)) {
-        const choice = await dialog.showMessageBox({ type: 'warning', buttons: ['取消', '备份后切换到较旧版本'], defaultId: 0, cancelId: 0,
+        const choice = await dialog.showMessageBox({ type: 'warning', buttons: ['取消', '重新安装此版本'], defaultId: 0, cancelId: 0,
           message: `即将从 ${oldVersion} 切换到较旧版本 ${selectedVersion}`,
-          detail: 'npm latest 只是分发标签，可能比当前预发布版旧。较旧版本未必能读取新版生成的数据；操作前会创建完整快照。' });
+          detail: 'npm latest 只是分发标签，可能比当前预发布版旧。将重新下载安装并继续使用现有数据目录。旧版本未必兼容新版数据；不会自动备份或回滚数据，请先自行备份重要数据。' });
         if (choice.response !== 1) return { ok: false, error: '已取消版本回退' };
       }
       reportOperation('正在独立目录准备新版本，当前服务继续运行…');
-      const next = await managed.stage(selectedVersion, abortController.signal, message => reportOperation(message));
+      const next = staged = await managed.stage(selectedVersion, abortController.signal, message => reportOperation(message));
       if (abortController.signal.aborted) throw new Error('安装已取消，未切换服务');
       if (dshProc) {
         let sessions;
@@ -350,27 +355,27 @@ if (!gotLock) {
         catch { if (!manualIdleConfirmed) throw new Error('下载完成，但无法复查运行任务；未停止服务，请重试'); }
         if (sessions?.some(s => s.running)) throw new Error('下载期间有新任务开始，未停止服务；任务结束后请重试');
       }
-      reportOperation('下载和版本校验完成，正在停止服务并备份数据…');
+      if (abortController.signal.aborted) throw new Error('安装已取消，未切换服务');
+      // Cancellation is safe only before switching; do not abandon a half-started new installation.
+      dshUpdateAbortController = null;
+      reportOperation('下载和版本校验完成，正在停止服务并切换安装…');
       await stopService();
-      await managed.activate(next, oldVersion, message => reportOperation(message)); activated = true;
-      if (abortController.signal.aborted) throw new Error('升级已取消');
+      await managed.activate(next); activated = true;
       renewUsage();
       const version = next.version;
       reportOperation(`Harness ${version} 已安装,正在启动服务…`, 'busy', version);
       await startService((message) => reportOperation(message));
       await showRunningMain();
-      await managed.confirm();
-      reportOperation(`Harness 已更新到 ${version}`, 'ok', version);
+      reportOperation(`Harness ${version} 已启动，正在清理旧的托管安装…`, 'busy', version);
+      const cleanup = await managed.confirm();
+      reportOperation(`Harness 已更新到 ${version}；${cleanup.warning || '仅保留当前托管安装'}`, cleanup.warning ? 'error' : 'ok', version);
       return { ok: true, version };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // npm 失败时尽量恢复原服务,避免一次更新让正在使用的桌面壳停摆。
-      if (activated && managed.info().backupAvailable) {
-        await stopService();
-        try { await managed.restore(progress => reportOperation(progress)); restored = true; renewUsage(); }
-        catch (restoreError) { reportOperation('恢复数据副本失败，升级前快照仍保留。请到诊断页面检查磁盘空间。', 'error'); return { ok: false, error: `${message}；恢复失败：${redact(String(restoreError))}` }; }
-      }
-      if ((hadRunningService || activated) && !dshProc) {
+      if (staged && !activated) await managed.discard(staged);
+      // Before activation the old data/runtime are unchanged. After activation never silently
+      // run an older binary against potentially migrated data; let the user reinstall explicitly.
+      if (!activated && hadRunningService && !dshProc) {
         try {
           await startService((progress) => reportOperation(progress));
           await showRunningMain();
@@ -378,7 +383,7 @@ if (!gotLock) {
           // 原服务也无法恢复时保留原始更新错误,用户仍可从控制栏再次重试。
         }
       }
-      reportOperation(`Harness 更新失败:${message}${restored ? '；已切回升级前安装与数据副本，新版数据未删除' : ''}`, 'error');
+      reportOperation(`Harness 更新失败:${message}${activated ? '；可从版本列表重新安装所需版本，会话数据未删除' : ''}`, 'error');
       return { ok: false, error: message };
     } finally {
       if (dshUpdateAbortController === abortController) dshUpdateAbortController = null;
@@ -511,7 +516,7 @@ if (!gotLock) {
   });
   ipcMain.handle('dsh:update', (_event, targetVersion?: unknown) => updateDshVersion(targetVersion));
   ipcMain.handle('dsh:update-cancel', () => {
-    if (!dshUpdateAbortController) return { ok: false, error: '当前没有正在执行的 Harness 安装' };
+    if (!dshUpdateAbortController) return { ok: false, error: launching ? '当前已进入服务切换或启动阶段，请等待完成' : '当前没有正在执行的 Harness 安装' };
     dshUpdateAbortController.abort();
     return { ok: true };
   });
@@ -596,20 +601,16 @@ if (!gotLock) {
     const path = selected.filePaths[0]; if (!(await stat(path)).isDirectory()) throw new Error('选择的路径不是文件夹');
     await bridge.createWorkspace(path); showCurrentWindow(); return { ok: true };
   });
-  ipcMain.handle('desktop:restore', async () => {
+  ipcMain.handle('desktop:cleanup-versions', async () => {
     if (launching || pluginBusy) throw new Error('已有维护操作进行中');
     launching = true;
     try {
-      if (!managed.info().backupAvailable) throw new Error('没有可恢复的已备份版本');
-      if (dshProc && (await bridge.sessions()).some(s => s.running)) throw new Error('请等待运行中的任务完成');
-      const choice = await dialog.showMessageBox({ type: 'warning', buttons: ['取消', '恢复快照并重启'], defaultId: 0, cancelId: 0,
-        message: '恢复升级前的版本和数据快照？', detail: '恢复到独立数据副本。升级后新增会话仍保留在原目录，但不会出现在恢复的副本中。不会合并或删除任何会话。' });
+      if (!managed.info().managed || managed.info().pending) throw new Error('请先成功启动当前安装，再清理旧安装');
+      const choice = await dialog.showMessageBox({ type: 'question', buttons: ['取消', '重试清理'], defaultId: 0, cancelId: 0,
+        message: '重新尝试清理旧的托管安装？', detail: '请先解除文件占用或修复目录权限。只清理桌面壳创建的非当前安装，不删除会话、配置、历史数据备份或系统全局 npm 安装。失败时立即停止，不强制删除。' });
       if (choice.response !== 1) return { ok: false, cancelled: true };
-      if (dshProc && (await bridge.sessions()).some(s => s.running)) throw new Error('确认期间有任务开始，请稍后重试');
-      await stopService();
-      try { await managed.restore(message => reportOperation(message)); }
-      catch (error) { await restartServiceNow(); throw error; }
-      renewUsage(); await startService(); await showRunningMain(); return { ok: true };
+      const result = await managed.cleanup(true);
+      return { ok: !result.warning, ...result };
     }
     finally { launching = false; }
   });
@@ -668,7 +669,7 @@ if (!gotLock) {
     catch (error) {
       closeWindow(loadingWindow);
       openCrash();
-      const message = `启动前恢复失败：${redact(error instanceof Error ? error.message : String(error))}。快照仍保留，请打开诊断检查磁盘和数据目录。`;
+      const message = `启动失败：${redact(error instanceof Error ? error.message : String(error))}。请打开诊断检查，或从版本列表重新安装；会话数据未删除。`;
       crashWindow?.webContents.once('did-finish-load', () => reportOperation(message, 'error'));
     }
     monitor = setInterval(() => { void backgroundTick(); }, 60_000);
@@ -678,7 +679,7 @@ if (!gotLock) {
         getDshVersion(managed.env()),
         getLatestDshVersion(managed.env()),
       ]);
-      if (installed && latest && isNewerVersion(latest, installed)) {
+      if (dshProc && installed && latest && isNewerVersion(latest, installed)) {
         reportOperation(`官方 Harness ${latest} 可更新(当前 ${installed})`, 'busy');
       }
     }, 3_000);
@@ -687,5 +688,15 @@ if (!gotLock) {
   app.on('window-all-closed', () => {
     // 托盘驻留:窗口全部关闭时应用继续运行。
   });
-  app.on('before-quit', () => { quitting = true; if (monitor) clearInterval(monitor); usageService.dispose(); });
+  app.on('before-quit', event => {
+    quitting = true;
+    if (monitor) clearInterval(monitor);
+    usageService.dispose();
+    if (exitCleanupDone) return;
+    event.preventDefault();
+    if (!exitCleanup) {
+      dshUpdateAbortController?.abort();
+      exitCleanup = stopService().finally(() => { exitCleanupDone = true; app.quit(); });
+    }
+  });
 }

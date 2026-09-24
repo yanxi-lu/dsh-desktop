@@ -12,7 +12,7 @@
       border-radius: 50%; animation: spin 1s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    #error { display: none; color: #cf222e; white-space: pre-wrap; max-width: 90%; margin: 10px auto; }
+    #error { display: none; color: #e45a64; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; max-width: 90%; margin: 10px auto 20px; }
     button { padding: 8px 22px; font-size: 15px; cursor: pointer; display: none; }
   </style>
 </head>
@@ -21,23 +21,26 @@
   <p id="status">正在启动 dsh 服务…</p>
   <p id="error"></p>
   <button id="retry">重试</button>
+  <button id="diagnose">打开工作台与诊断</button>
   <script>
+    const spinner = document.querySelector('.spinner'), status = document.getElementById('status');
+    const error = document.getElementById('error'), retry = document.getElementById('retry'), diagnose = document.getElementById('diagnose');
+    function showFailure(message) {
+      spinner.style.display = 'none'; status.textContent = '启动失败';
+      error.textContent = message; error.style.display = 'block';
+      retry.style.display = diagnose.style.display = 'inline-block'; retry.disabled = false;
+    }
     window.dshApp.onOperationStatus((event) => {
-      document.getElementById('status').textContent = event.message;
+      if (event.kind === 'error') showFailure(event.message);
+      else status.textContent = event.message;
     });
-    window.dshApp.onError((msg) => {
-      document.querySelector('.spinner').style.display = 'none';
-      document.getElementById('status').textContent = '启动失败';
-      document.getElementById('error').textContent = msg;
-      document.getElementById('error').style.display = 'block';
-      document.getElementById('retry').style.display = 'inline-block';
-    });
-    document.getElementById('retry').onclick = async () => {
-      document.querySelector('.spinner').style.display = 'block';
-      document.getElementById('status').textContent = '正在重新启动 dsh 服务…';
-      document.getElementById('error').style.display = 'none';
-      document.getElementById('retry').style.display = 'none';
-      await window.dshApp.retry();
+    window.dshApp.onError(showFailure);
+    diagnose.onclick = () => window.dshApp.openManagement();
+    retry.onclick = async () => {
+      spinner.style.display = 'block'; status.textContent = '正在重新启动 dsh 服务…';
+      error.style.display = 'none'; retry.disabled = true;
+      try { const result = await window.dshApp.retry(); if (!result.ok) showFailure(result.error || '启动失败，请打开工作台与诊断'); }
+      catch (failure) { showFailure(failure.message || '重试失败，请打开工作台与诊断'); }
     };
   </script>
 </body>

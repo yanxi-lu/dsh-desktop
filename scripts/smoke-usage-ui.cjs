@@ -41,7 +41,7 @@ ipcMain.handle('usage:get', async (_event, request) => {
   lastSummary = await service.get({ ...request, priceRules: preferences.get().priceRules });
   return lastSummary;
 });
-ipcMain.handle('dsh:versions', async () => ({ current: null, latest: null, versions: [] }));
+ipcMain.handle('dsh:versions', async () => ({ current: '0.1.7-rc.1', latest: '0.1.5-rc.3', versions: ['0.1.7-rc.1', '0.1.5-rc.3'] }));
 ipcMain.handle('balance:get', async () => ({ ok: false, error: '测试窗口不查询账户余额' }));
 ipcMain.handle('desktop:settings-get', () => preferences.get());
 ipcMain.handle('desktop:settings-save', (_e, value) => preferences.set(value));
@@ -123,6 +123,28 @@ app.whenReady().then(async () => {
   await execute("document.querySelector('#pluginList button').click()"); await until("document.querySelector('#pluginList button').textContent === '取消收藏'");
   assert.deepEqual(preferences.get().favorites, ['@test/plugin']);
   await execute("document.querySelector('[data-tab=updates]').click(); document.getElementById('runDiagnostics').click()"); await until("document.querySelectorAll('.diagnostic').length === 1");
+  assert.equal(await execute('!!document.getElementById("restoreSnapshot")'), false);
+  assert.equal(await execute('document.getElementById("retryCleanup").hidden'), true);
+  // Match small desktop windows and Windows/Electron zoom without clipping or wrapping labels.
+  const navLayouts = [];
+  for (const width of [820, 1040, 1280]) for (const zoom of [1, 1.25, 1.5]) {
+    window.setContentSize(width, 820); window.webContents.setZoomFactor(zoom);
+    await execute('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const layout = await execute(`Array.from(document.querySelectorAll('.workbench-nav button')).map(button => {
+      const label = button.querySelector('.nav-label'), icon = button.querySelector('.nav-icon');
+      const b = button.getBoundingClientRect(), l = label.getBoundingClientRect(), i = icon.getBoundingClientRect();
+      return { text: label.textContent, singleLine: l.height <= parseFloat(getComputedStyle(label).lineHeight) + 1,
+        fits: l.right <= b.right - 4 && i.right < l.left, whiteSpace: getComputedStyle(label).whiteSpace };
+    })`);
+    assert.equal(layout.length, 6);
+    for (const item of layout) { assert.equal(item.singleLine, true, `${width}/${zoom}: ${item.text}`); assert.equal(item.fits, true, `${width}/${zoom}: ${item.text}`); assert.equal(item.whiteSpace, 'nowrap'); }
+    navLayouts.push({ width, zoom });
+  }
+  window.webContents.setZoomFactor(1); window.setContentSize(1040, 820);
+  await new Promise(resolve => setTimeout(resolve, 150));
+  mkdirSync(join(root, '.artifacts'), { recursive: true });
+  writeFileSync(join(root, '.artifacts', packaged ? 'updates-packaged.png' : 'updates-preview.png'), (await window.webContents.capturePage()).toPNG());
+  window.setContentSize(1280, 900);
   // 日期过滤和后台统计结果对齐。
   assert.equal(lastSummary.totalTokens, getUsageAnalytics({}, { range: 'today' }, source).totalTokens);
   assert.equal(preferences.get().budgets.daily, 25, 'later edits preserve budgets');
@@ -145,7 +167,7 @@ app.whenReady().then(async () => {
   console.log(JSON.stringify({ verified: true, packaged, firstLoadMs,
     requestCount: 2400, sessions: 80, sessionPageSize: 25,
     rapidChangesCoalesced: true, unchangedChartNotRedrawn: true, customEmptyRange: true, workerLoaded: true,
-    settingsPersisted: true, sessionLabelsAndSearch: true, sessionDetailExport: true, pluginFavorites: true, diagnosticsRendered: true }));
+    settingsPersisted: true, sessionLabelsAndSearch: true, sessionDetailExport: true, pluginFavorites: true, diagnosticsRendered: true, navLayouts, noSnapshotRestore: true }));
 }).catch(error => { console.error(error.stack); process.exitCode = 1; }).finally(() => {
   service.dispose(); window?.destroy(); app.exit(process.exitCode || 0);
 });

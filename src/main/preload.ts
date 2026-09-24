@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld('dshWorkbench', {
   changePlugin: (action: string, spec: string) => ipcRenderer.invoke('desktop:plugin-change', action, spec),
   diagnose: () => ipcRenderer.invoke('desktop:diagnose'), exportDiagnostics: () => ipcRenderer.invoke('desktop:diagnostic-export'),
   changePort: () => ipcRenderer.invoke('desktop:port-change'), pickWorkspace: () => ipcRenderer.invoke('desktop:workspace-pick'),
-  restore: () => ipcRenderer.invoke('desktop:restore'), cancelQueue: () => ipcRenderer.invoke('desktop:queue-cancel'),
+  retryCleanup: () => ipcRenderer.invoke('desktop:cleanup-versions'), cancelQueue: () => ipcRenderer.invoke('desktop:queue-cancel'),
   releaseNotes: (version: string) => ipcRenderer.invoke('desktop:release-notes', version),
   rebuild: (request: unknown) => ipcRenderer.invoke('usage:rebuild', request),
   exportUsage: (request: unknown, format: string, section: string) => ipcRenderer.invoke('usage:export', request, format, section),
@@ -44,7 +44,7 @@ contextBridge.exposeInMainWorld('dshApp', {
   /** 正常运行时一键重启 Harness 服务 */
   restartDsh: (): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('dsh:restart'),
-  /** 在桌面壳独立目录安装官方 Harness，备份后切换并重启服务 */
+  /** 在独立目录安装官方 Harness，切换重启成功后清理旧安装，不自动备份数据 */
   updateDsh: (targetVersion?: string): Promise<{ ok: boolean; version?: string; error?: string }> =>
     ipcRenderer.invoke('dsh:update', targetVersion),
   /** npm 官方已发布版本列表 */

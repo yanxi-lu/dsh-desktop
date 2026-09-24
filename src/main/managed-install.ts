@@ -1,12 +1,14 @@
-import { mkdir, readdir, lstat, copyFile, readFile, writeFile, rename, readlink, symlink } from 'node:fs/promises';
+import { mkdir, readdir, lstat, copyFile, readFile, writeFile, rename, readlink, symlink, realpath } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve, relative, isAbsolute, dirname, parse } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { normalizeDshTargetVersion, resolveDshCommand, updateDshWithProgress } from './dsh';
+import { normalizeDshTargetVersion, updateDshWithProgress } from './dsh';
+import { INSTALL_MARKER, installSlots, removeInstallSlot } from './install-cleanup';
 
-interface Installation { bin: string; home: string; version: string }
-interface InstallState { active?: Installation; previous?: Installation; backup?: string; pending?: boolean; port?: number; changedAt?: string }
+export interface Installation { bin: string; home: string; version: string }
+interface InstallState { schema: 2; active?: Installation; pending?: boolean; port?: number; changedAt?: string; cleanupWarning?: string }
+export interface CleanupResult { removed: number; warning: string }
 /** Copy a stopped data tree without traversing links. Internal pnpm junctions are rebased into the copy; external links are refused. */
 export async function snapshotTree(source: string, destination: string): Promise<void> {
   const src = resolve(source), dest = resolve(destination);
@@ -35,17 +37,22 @@ export async function snapshotTree(source: string, destination: string): Promise
 }
 
 export class ManagedInstall {
-  private state: InstallState = {};
+  private state: InstallState = { schema: 2 };
   private readonly file: string;
-  constructor(private readonly root: string, private readonly baseEnv: NodeJS.ProcessEnv) {
+  constructor(private readonly root: string, private readonly baseEnv: NodeJS.ProcessEnv, private readonly installer = updateDshWithProgress) {
     this.file = join(root, 'state.json');
-    try { this.state = JSON.parse(readFileSync(this.file, 'utf8')); } catch { /* first launch */ }
+    try {
+      const old = JSON.parse(readFileSync(this.file, 'utf8'));
+      // Keep the selected data home (including legacy restored-data), but stop retaining old-version pointers.
+      this.state = { schema: 2, active: old.active, port: old.port, pending: old.pending === true,
+        changedAt: old.changedAt, cleanupWarning: typeof old.cleanupWarning === 'string' ? old.cleanupWarning : undefined };
+    } catch { /* first launch */ }
   }
   env(): NodeJS.ProcessEnv { return { ...this.baseEnv, ...(this.state.active ? { DSH_BIN: this.state.active.bin, DSH_HOME: this.state.active.home } : {}) }; }
   home(): string { return this.env().DSH_HOME?.trim() || join(homedir(), '.dsh'); }
-  info(): { managed: boolean; version: string | null; previousVersion: string | null; backupAvailable: boolean; pending: boolean; port: number } {
-    return { managed: !!this.state.active, version: this.state.active?.version ?? null, previousVersion: this.state.previous?.version ?? null,
-      backupAvailable: !!this.state.backup && !!this.state.previous?.bin, pending: this.state.pending === true, port: this.state.port ?? 3080 };
+  info(): { managed: boolean; version: string | null; pending: boolean; port: number; cleanupWarning: string } {
+    return { managed: !!this.state.active, version: this.state.active?.version ?? null,
+      pending: this.state.pending === true, port: this.state.port ?? 3080, cleanupWarning: this.state.cleanupWarning || '' };
   }
   private async save(): Promise<void> {
     await mkdir(this.root, { recursive: true });
@@ -62,31 +69,46 @@ export class ManagedInstall {
     normalizeDshTargetVersion(target);
     const slot = join(this.root, 'versions', randomUUID());
     await mkdir(slot, { recursive: true });
-    const version = await updateDshWithProgress(this.env(), p => progress(p.message), { targetVersion: target, signal, installPrefix: slot });
-    // npm integrity verification and an executable version check must both succeed before stopping the old service.
-    const bin = join(slot, 'dsh.cmd');
-    const installed = JSON.parse(await readFile(join(slot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8'));
-    if (installed.version !== version || (target !== 'latest' && version !== target)) throw new Error('安装后的版本校验不一致，未切换');
-    return { bin, home: this.home(), version };
+    await writeFile(join(slot, INSTALL_MARKER), JSON.stringify({ app: 'dsh-desktop', kind: 'harness-install', id: parse(slot).base }), { flag: 'wx' });
+    try {
+      const version = await this.installer(this.env(), p => progress(p.message), { targetVersion: target, signal, installPrefix: slot });
+      // npm integrity verification and an executable version check must both succeed before stopping the old service.
+      const bin = join(slot, 'dsh.cmd');
+      const installed = JSON.parse(await readFile(join(slot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8'));
+      if (installed.version !== version || (target !== 'latest' && version !== target)) throw new Error('安装后的版本校验不一致，未切换');
+      return { bin, home: this.home(), version };
+    } catch (error) { await this.discard({ bin: join(slot, 'dsh.cmd'), home: this.home(), version: target }); throw error; }
   }
-  async activate(next: Installation, currentVersion: string | null, progress: (message: string) => void): Promise<void> {
-    const previous = this.state.active ?? { bin: await resolveDshCommand(this.baseEnv) ?? '', home: this.home(), version: currentVersion ?? '未知' };
-    const backup = join(this.root, 'backups', randomUUID());
-    await mkdir(join(this.root, 'backups'), { recursive: true });
-    progress('正在备份完整 Harness 数据（包含本机凭据，仅保留在本机，不会上传）…');
-    await snapshotTree(previous.home, backup);
-    await this.commit({ ...this.state, previous, backup, active: next, pending: true, changedAt: new Date().toISOString() });
+  async activate(next: Installation): Promise<void> {
+    await this.commit({ ...this.state, active: next, pending: true, changedAt: new Date().toISOString() });
   }
-  async confirm(): Promise<void> { await this.commit({ ...this.state, pending: false }); }
-  async restore(progress: (message: string) => void): Promise<void> {
-    if (!this.state.previous?.bin || !this.state.backup) throw new Error('没有可恢复的已备份版本');
-    // Missing data is acceptable on first installation, never for a saved backup.
-    const backupStat = await lstat(this.state.backup);
-    if (!backupStat.isDirectory() || backupStat.isSymbolicLink()) throw new Error('升级前快照不是有效的普通目录，未切换数据');
-    const restored = join(this.root, 'restored-data', randomUUID());
-    await mkdir(join(this.root, 'restored-data'), { recursive: true });
-    progress('正在从升级前快照恢复独立数据副本；新版数据原样保留…');
-    await snapshotTree(this.state.backup, restored);
-    await this.commit({ ...this.state, active: { ...this.state.previous, home: restored }, pending: false, changedAt: new Date().toISOString() });
+  async confirm(): Promise<CleanupResult> {
+    await this.commit({ ...this.state, pending: false });
+    return this.cleanup();
+  }
+  private dataHomes(): string[] { return [...new Set([this.home(), this.baseEnv.DSH_HOME?.trim()].filter((path): path is string => !!path))]; }
+  private async warn(): Promise<string> {
+    const warning = '旧安装清理未完成，已停止自动重试。请检查文件占用、目录权限或链接，再点击重试清理；会话数据未删除。';
+    await this.commit({ ...this.state, cleanupWarning: warning }); return warning;
+  }
+  async discard(installation: Installation): Promise<void> {
+    try { await removeInstallSlot(this.root, dirname(installation.bin), this.state.active?.bin, this.dataHomes()); }
+    catch { await this.warn(); }
+  }
+  async cleanup(retry = false): Promise<CleanupResult> {
+    if (this.state.cleanupWarning && !retry) return { removed: 0, warning: this.state.cleanupWarning };
+    if (!this.state.active || this.state.pending) return { removed: 0, warning: '' };
+    let removed = 0;
+    try {
+      let activeBin = resolve(this.state.active.bin);
+      try { activeBin = await realpath(activeBin); } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
+      for (const slot of await installSlots(this.root)) {
+        const part = relative(await realpath(slot), activeBin);
+        if (part === '' || (!part.startsWith('..') && !isAbsolute(part))) continue;
+        await removeInstallSlot(this.root, slot, this.state.active.bin, this.dataHomes()); removed++;
+      }
+      if (this.state.cleanupWarning) await this.commit({ ...this.state, cleanupWarning: undefined });
+      return { removed, warning: '' };
+    } catch { return { removed, warning: await this.warn() }; }
   }
 }

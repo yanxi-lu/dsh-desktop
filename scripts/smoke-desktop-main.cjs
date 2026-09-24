@@ -8,7 +8,8 @@ const { join, resolve } = require('node:path');
 const childProcess = require('node:child_process');
 const root = resolve(__dirname, '..');
 const packaged = process.argv.includes('--packaged');
-const failedRecovery = process.argv.includes('--failed-recovery');
+const legacyState = process.argv.includes('--legacy-state');
+const occupiedPort = process.argv.includes('--occupied-port');
 const appRoot = packaged ? join(root, 'release', 'win-unpacked', 'resources', 'app.asar') : root;
 const bin = process.argv.find(arg => /dsh\.cmd$/i.test(arg));
 assert.ok(bin && existsSync(bin), 'Pass an existing official dsh.cmd path');
@@ -28,7 +29,7 @@ BrowserWindow.prototype.focus = function () {};
 const children = new Set();
 const originalSpawn = childProcess.spawn;
 childProcess.spawn = function (...args) { const child = originalSpawn.apply(this, args); children.add(child); child.once('exit', () => children.delete(child)); return child; };
-const { availablePort } = require(join(appRoot, 'dist/main/diagnostics'));
+const { availablePort, assertPortAvailable } = require(join(appRoot, 'dist/main/diagnostics'));
 const { killTree } = require(join(appRoot, 'dist/main/dsh'));
 const delay = ms => new Promise(resolveWait => setTimeout(resolveWait, ms));
 async function until(check) {
@@ -39,20 +40,34 @@ async function until(check) {
 
 async function run() {
   const port = await availablePort();
+  let occupied;
+  if (occupiedPort) {
+    occupied = require('node:net').createServer(socket => socket.end());
+    await new Promise(resolveListen => occupied.listen(port, '127.0.0.1', resolveListen));
+  }
   mkdirSync(join(profile, 'harness-runtime'));
   const installation = { bin: resolve(bin), home, version: '0.1.7-rc.1' };
   writeFileSync(join(profile, 'harness-runtime', 'state.json'), JSON.stringify({ port,
-    ...(failedRecovery ? { active: installation, previous: installation, pending: true, backup: join(temporary, 'missing-backup') } : {}) }));
+    ...(legacyState ? { active: installation, previous: installation, pending: true, backup: join(temporary, 'missing-backup') } : {}) }));
   require(join(appRoot, 'dist/main/index'));
-  if (failedRecovery) {
-    const crash = await until(() => BrowserWindow.getAllWindows().find(w => /crash\.html$/.test(w.webContents.getURL()) && !w.webContents.isLoading()));
-    await until(() => crash.webContents.executeJavaScript('document.getElementById("result").textContent.includes("恢复失败")'));
-    await crash.webContents.executeJavaScript('window.dshApp.openManagement()');
-    const management = await until(() => BrowserWindow.getAllWindows().find(w => /management\.html$/.test(w.webContents.getURL()) && !w.webContents.isLoading()));
-    assert.equal((await management.webContents.executeJavaScript('dshWorkbench.overview()')).running, false);
-    assert.equal(JSON.parse(readFileSync(join(profile, 'harness-runtime', 'state.json'), 'utf8')).active.home, home);
-    console.log(JSON.stringify({ verified: true, packaged, missingBackupRefused: true, crashExplained: true, diagnosticsAccessible: true, dataSelectionUnchanged: true }));
-    return;
+  if (occupied) {
+    const loading = await until(() => BrowserWindow.getAllWindows().find(w => /loading\.html$/.test(w.webContents.getURL()) && !w.webContents.isLoading()));
+    const loadingJs = code => loading.webContents.executeJavaScript(code);
+    await until(() => loadingJs('document.getElementById("error").textContent.includes("端口")'));
+    assert.equal(await loadingJs('getComputedStyle(document.querySelector(".spinner")).display'), 'none');
+    assert.equal(await loadingJs('getComputedStyle(document.getElementById("diagnose")).display'), 'inline-block');
+    mkdirSync(join(root, '.artifacts'), { recursive: true });
+    writeFileSync(join(root, '.artifacts', packaged ? 'startup-port-occupied-packaged.png' : 'startup-port-occupied.png'), (await loading.webContents.capturePage()).toPNG());
+    assert.equal((await loadingJs('dshApp.retry()')).ok, false);
+    assert.equal(await loadingJs('document.getElementById("retry").disabled'), false);
+    assert.equal(occupied.listening, true, 'unknown listening service remains untouched');
+    await loadingJs('dshApp.openManagement()');
+    const diag = await until(() => BrowserWindow.getAllWindows().find(w => /management\.html$/.test(w.webContents.getURL()) && !w.webContents.isLoading()));
+    assert.equal((await diag.webContents.executeJavaScript('dshWorkbench.overview()')).running, false);
+    await new Promise(resolveClose => occupied.close(resolveClose));
+    // Success closes the invoking loading window; observe the new shell instead
+    // of waiting for an IPC reply in a renderer which is being destroyed.
+    await loadingJs('void dshApp.retry()');
   }
   const shell = await until(() => BrowserWindow.getAllWindows().find(w => /shell\.html$/.test(w.webContents.getURL()) && !w.webContents.isLoading()));
   const executeShell = source => shell.webContents.executeJavaScript(source);
@@ -63,6 +78,13 @@ async function run() {
   const management = await until(() => BrowserWindow.getAllWindows().find(w => /management\.html$/.test(w.webContents.getURL()) && !w.webContents.isLoading()));
   const execute = source => management.webContents.executeJavaScript(source);
   await until(() => execute('!!window.lastUsageSummary'));
+  assert.equal(await execute('typeof dshWorkbench.restore'), 'undefined');
+  assert.equal(await execute('typeof dshWorkbench.retryCleanup'), 'function');
+  if (legacyState) {
+    const state = JSON.parse(readFileSync(join(profile, 'harness-runtime', 'state.json'), 'utf8'));
+    assert.equal(state.active.home, home); assert.equal(state.pending, false);
+    assert.equal(state.schema, 2); assert.equal(state.backup, undefined); assert.equal(state.previous, undefined);
+  }
   assert.equal((await execute('window.dshWorkbench.overview()')).running, true);
   await execute('(async()=>{const p=await dshWorkbench.settings();return dshWorkbench.saveSettings({...p,theme:"dark",budgets:{...p.budgets,daily:37}})})()');
   assert.equal(JSON.parse(readFileSync(join(profile, 'preferences.json'), 'utf8')).budgets.daily, 37);
@@ -97,7 +119,10 @@ async function run() {
   assert.ok((await execute('window.dshWorkbench.plugins()')).length > 0, 'real RPC survives restart and auth-cookie renewal');
   console.log(JSON.stringify({ verified: true, packaged, appVersion: app.getVersion(), isolated: true, realHarnessBoot: true,
     realPluginCount: plugins.length, actualIpc: true, unauthorizedIpcRejected: true, settingsPersisted: true,
-    maintenanceLock: true, portSwitchRestart: true, paidModelCalls: 0 }));
+    maintenanceLock: true, portSwitchRestart: true, legacyStateMigrated: legacyState, restoreIpcRemoved: true, occupiedPortRecovered: occupiedPort, paidModelCalls: 0 }));
+  await new Promise(resolveQuit => { app.once('will-quit', event => { event.preventDefault(); resolveQuit(); }); app.quit(); });
+  await assertPortAvailable(changed.runtime.port);
+  console.log(JSON.stringify({ gracefulQuitVerified: true, servicePortReleased: true }));
 }
 run().catch(error => { console.error(error.message); process.exitCode = 1; }).finally(async () => {
   for (const child of [...children]) if (child.pid && child.exitCode === null) await killTree(child.pid);

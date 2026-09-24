@@ -325,7 +325,7 @@
         <button id="installVersion" class="primary" disabled>安装所选版本</button>
       </div>
       <p id="operation"></p>
-      <p class="hint">版本来自官方 npm 包 <code>@deepseek-ai/dsh</code>。latest 是发布标签，不保证为正式版。下载到独立目录并校验后，暂停服务、备份数据再切换；备份仅存本机，可能包含凭据。有运行任务时排队更新。不会把 GitHub 上未发布到 npm 的源码标签作为可安装版本。</p>
+      <p class="hint">版本来自官方 npm 包 <code>@deepseek-ai/dsh</code>。latest 是发布标签，不保证为正式版。下载并校验后切换，启动成功后清理旧的托管安装；需要旧版时重新下载安装，不自动创建升级快照。有运行任务时排队更新。GitHub 上未发布到 npm 的源码标签不能直接安装。</p>
     </section>
   </main>
   <script src="vendor/echarts.min.js"></script>
@@ -852,7 +852,8 @@
       if (installing) {
         el.installVersion.disabled = true;
         el.installVersion.textContent = '正在取消…';
-        await window.dshApp.cancelDshUpdate();
+        const result = await window.dshApp.cancelDshUpdate();
+        if (!result.ok) { el.installVersion.textContent = '正在切换…'; setOperation(result.error || '请等待当前操作完成', 'busy'); }
         return;
       }
       installing = true;
@@ -897,7 +898,12 @@
       savePricing(); refreshUsageFromFirstPage();
     };
     el.pricingDocs.onclick = () => window.dshApp.openPricingDocs();
-    window.dshApp?.onOperationStatus?.((event) => setOperation(event.message, event.kind || ''));
+    window.dshApp?.onOperationStatus?.((event) => {
+      setOperation(event.message, event.kind || '');
+      if (installing && event.canCancelInstall === false && event.kind === 'busy') {
+        el.installVersion.disabled = true; el.installVersion.textContent = '正在切换…';
+      }
+    });
     const savedPricing = readSavedPricing();
     el.priceModel.value = savedPricing.model;
     el.priceTier.value = savedPricing.tier;

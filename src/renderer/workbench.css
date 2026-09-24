@@ -4,11 +4,14 @@
 body { background: var(--canvas); color: var(--ink); }
 header { padding: 21px 28px; background: linear-gradient(110deg, #0c1b37, #133c77 70%, #0b6586); border-bottom: 1px solid #2777b8; }
 .header-caption { font-size: 13px; font-weight: 400; opacity: .7; margin-left: 14px; }
-.workbench { display: grid; grid-template-columns: 170px minmax(0, 1fr); min-height: calc(100vh - 72px); }
+.workbench { display: grid; grid-template-columns: 180px minmax(0, 1fr); min-height: calc(100vh - 72px); }
 .workbench-nav { border-right: 1px solid var(--line); background: var(--surface); padding: 22px 12px; position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 9px; }
-.workbench-nav button { border: 0; height: 43px; text-align: left; background: transparent; color: var(--muted); padding-left: 17px; font-weight: 600; }
+.workbench-nav button { display: flex; align-items: center; gap: 11px; width: 100%; flex-shrink: 0; border: 0; min-height: 44px; text-align: left; background: transparent; color: var(--muted); padding: 11px 13px; font-weight: 600; line-height: 22px; white-space: nowrap; }
+.nav-icon { flex: 0 0 20px; width: 20px; text-align: center; font-size: 16px; font-weight: 400; }
+.nav-label { min-width: 0; white-space: nowrap; }
 .workbench-nav button[aria-current=page] { background: var(--soft); color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
 .nav-note { font-size: 11px; color: var(--muted); padding: 16px 10px; line-height: 1.7; }
+.nav-note span { display: block; white-space: nowrap; }
 .workbench-pages { min-width: 0; }
 .workbench-pages main { padding: 23px; max-width: 1700px; margin: auto; }
 section, .subpanel { background: var(--surface); border-color: var(--line); color: var(--ink); }
@@ -62,4 +65,4 @@ td { color: var(--ink); }
 dialog { max-width: min(680px, 90vw); width: 580px; border: 1px solid var(--line); border-radius: 16px; padding: 24px; background: var(--surface); color: var(--ink); }
 dialog::backdrop { background: #0007; backdrop-filter: blur(4px); }
 .notice { padding: 12px 15px; border-radius: 9px; background: var(--soft); border-left: 3px solid var(--accent); color: var(--muted); font-size: 12px; line-height: 1.7; margin: 12px 0; }
-@media(max-width: 1060px) { .workbench { grid-template-columns: 132px minmax(0, 1fr); } .workbench-pages main { padding: 16px; } .workbench-nav { padding: 16px 8px; } .wb-metrics { grid-template-columns: 1fr; } .wb-grid { grid-template-columns: 1fr; } }
+@media(max-width: 1060px) { .workbench-pages main { padding: 16px; } .workbench-nav { padding: 16px 12px; } .wb-metrics { grid-template-columns: 1fr; } .wb-grid { grid-template-columns: 1fr; } }

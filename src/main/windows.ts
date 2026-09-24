@@ -113,7 +113,7 @@ export function createOnboardingWindow(preloadPath: string): BrowserWindow {
 export function createLoadingWindow(preloadPath: string): BrowserWindow {
   const { BrowserWindow, app } = electron();
   const win = new BrowserWindow(
-    attachPreload({ ...baseOptions(), width: 480, height: 300, resizable: false }, preloadPath),
+    attachPreload({ ...baseOptions(), width: 600, height: 380, resizable: false }, preloadPath),
   );
   win.loadFile(rendererPath(app, 'loading.html'));
   win.once('ready-to-show', () => win.show());

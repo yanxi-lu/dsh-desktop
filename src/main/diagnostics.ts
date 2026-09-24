@@ -38,6 +38,16 @@ export async function availablePort(): Promise<number> {
     server.listen(0, '127.0.0.1', () => { const address = server.address(); const port = typeof address === 'object' && address ? address.port : 0;
       server.close(error => error ? reject(error) : resolve(port)); }); });
 }
+/** Probe before spawning; never stop or silently attach to an unknown listener. */
+export async function assertPortAvailable(port: number, host = '127.0.0.1'): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const server = createServer();
+    server.once('error', (error: NodeJS.ErrnoException) => reject(new Error(error.code === 'EADDRINUSE'
+      ? `端口 ${port} 已被已有服务占用。请先退出旧 Harness 服务，或打开工作台与诊断检查端口；未结束任何已有进程。`
+      : `端口 ${port} 无法使用(${error.code || 'UNKNOWN'})，请打开工作台与诊断检查权限或更换端口。`)));
+    server.listen({ port, host, exclusive: true }, () => server.close(error => error ? reject(error) : resolve()));
+  });
+}
 export function safeDiagnosticReport(value: unknown): string {
   // Scrub each value before encoding so redaction never corrupts JSON escapes.
   return JSON.stringify(value, (_key, item) => typeof item === 'string' ? redact(item) : item, 2);

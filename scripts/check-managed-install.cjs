@@ -1,8 +1,8 @@
 // Network integration test: installs the official package into a NEW temporary prefix only.
 const assert = require('node:assert/strict');
-const { mkdtempSync, mkdirSync, writeFileSync, readFileSync } = require('node:fs');
+const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } = require('node:fs');
 const { tmpdir } = require('node:os');
-const { join, resolve } = require('node:path');
+const { join, resolve, basename, dirname } = require('node:path');
 const { promisify } = require('node:util');
 const { execFile } = require('node:child_process');
 const { ManagedInstall } = require('../dist/main/managed-install');
@@ -19,14 +19,24 @@ async function run() {
   let last = 0;
   const next = await managed.stage(version, new AbortController().signal, () => { if (Date.now() - last > 30000) { last = Date.now(); console.log('Isolated official package installation in progress'); } });
   assert.equal(next.version, version); assert.equal(await getDshVersion(env), before, 'global installation is unchanged');
-  await managed.activate(next, before, () => {});
+  await managed.activate(next);
   assert.equal(await getDshVersion(managed.env()), version);
   const output = await promisify(execFile)(process.execPath, [resolve(__dirname, 'check-official-bridge.cjs'), join(next.bin, '..', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')], { windowsHide: true, timeout: 160000 });
   assert.match(output.stdout, /"verified":true/);
+  assert.equal((await managed.confirm()).warning, '');
   writeFileSync(join(home, 'fixture.txt'), 'after-migration');
-  await managed.restore(() => {});
-  assert.equal(readFileSync(join(managed.home(), 'fixture.txt'), 'utf8'), 'before');
+  // Reinstall through the same public mechanism; the previous directory is not reused.
+  const reinstalled = await managed.stage(version, new AbortController().signal, () => {});
+  assert.notEqual(reinstalled.bin, next.bin);
+  await managed.activate(reinstalled);
+  const secondBoot = await promisify(execFile)(process.execPath, [resolve(__dirname, 'check-official-bridge.cjs'), join(dirname(reinstalled.bin), 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')], { windowsHide: true, timeout: 160000 });
+  assert.match(secondBoot.stdout, /"verified":true/);
+  assert.deepEqual(await managed.confirm(), { removed: 1, warning: '' });
+  assert.deepEqual(readdirSync(join(temporary, 'runtime', 'versions')), [basename(dirname(reinstalled.bin))]);
+  assert.equal(managed.home(), home);
   assert.equal(readFileSync(join(home, 'fixture.txt'), 'utf8'), 'after-migration');
-  console.log(JSON.stringify({ verified: true, isolatedInstall: version, globalUnchanged: true, installedRuntimeBoot: true, archiveRestore: true, snapshotRestored: true, migratedDataPreserved: true }));
+  assert.equal(existsSync(join(temporary, 'runtime', 'backups')), false);
+  assert.equal(await getDshVersion(env), before);
+  console.log(JSON.stringify({ verified: true, isolatedInstall: version, globalUnchanged: true, installedRuntimeBoot: true, reinstalledRuntimeBoot: true, onlyCurrentInstall: true, noUpgradeSnapshots: true, migratedDataPreserved: true }));
 }
 run().catch(error => { console.error(redact(error.message)); process.exitCode = 1; });

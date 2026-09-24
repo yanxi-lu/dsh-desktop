@@ -130,15 +130,17 @@ describe('配置、导出和提醒', () => {
   });
 });
 
-describe('官方适配与隔离恢复', () => {
-  it('快照被移走时拒绝恢复，不能将空目录冒充恢复的数据', async () => {
+describe('官方适配与安装管理', () => {
+  it('兼容旧状态，不再依赖快照恢复，也不改变当前数据目录', async () => {
     const root = fixture(), home = join(root, 'home'), runtime = join(root, 'runtime'); mkdirSync(home); mkdirSync(runtime);
     const installation = { bin: join(root, 'current.cmd'), home, version: '0.1.7-rc.1' };
     writeFileSync(join(runtime, 'state.json'), JSON.stringify({ active: installation, previous: installation, pending: true, backup: join(root, 'missing') }));
     const manager = new ManagedInstall(runtime, {});
-    await expect(manager.restore(() => {})).rejects.toThrow();
+    await manager.confirm();
     expect(manager.home()).toBe(home);
-    expect(manager.info().pending).toBe(true);
+    expect(manager.info().pending).toBe(false);
+    expect(JSON.parse(readFileSync(join(runtime, 'state.json'), 'utf8'))).not.toHaveProperty('backup');
+    expect(JSON.parse(readFileSync(join(runtime, 'state.json'), 'utf8'))).not.toHaveProperty('previous');
   });
   it('latest 指向较低版本时不误报为可升级', () => {
     expect(isNewerVersion('0.1.1-rc.2', '0.1.2-alpha.3')).toBe(false);
@@ -155,11 +157,11 @@ describe('官方适配与隔离恢复', () => {
   it('运行状态写盘失败时保留原内存选择', async () => {
     const root = fixture(), home = join(root, 'home'), runtime = join(root, 'runtime'); mkdirSync(home);
     const manager = new ManagedInstall(runtime, { DSH_HOME: home, DSH_BIN: join(root, 'old.cmd') });
-    await manager.activate({ bin: join(root, 'new.cmd'), home, version: '0.1.7-rc.1' }, '0.1.1-rc.2', () => {});
+    await manager.activate({ bin: join(root, 'new.cmd'), home, version: '0.1.7-rc.1' });
     mkdirSync(join(runtime, 'state.json.tmp'));
     await expect(manager.setPort(12345)).rejects.toThrow();
     expect(manager.info().port).toBe(3080);
-    await expect(manager.restore(() => {})).rejects.toThrow();
+    await expect(manager.activate({ bin: join(root, 'old.cmd'), home, version: '0.1.1-rc.2' })).rejects.toThrow();
     expect(manager.env().DSH_BIN).toBe(join(root, 'new.cmd'));
     expect(manager.home()).toBe(home);
     expect(new ManagedInstall(runtime, {}).home()).toBe(home);
@@ -201,16 +203,17 @@ describe('官方适配与隔离恢复', () => {
     expect(() => bridge.validateSpec('@trusted/plugin@1.2.3')).not.toThrow();
     await expect(new HarnessBridge(() => 'http://evil.test', fetch).sessions()).rejects.toThrow('本机');
   });
-  it('完整备份后在独立数据副本回滚，保留升级后数据并持久化选择', async () => {
+  it('切换安装不生成数据快照、不回滚数据，保持数据目录和持久化选择', async () => {
     const root = fixture(), home = join(root, 'home'), managedRoot = join(root, 'runtime'); mkdirSync(home);
     writeFileSync(join(home, 'original.json'), 'before');
     const manager = new ManagedInstall(managedRoot, { DSH_BIN: join(root, 'old.cmd'), DSH_HOME: home });
-    await manager.activate({ bin: join(root, 'new.cmd'), home, version: '0.1.7-rc.1' }, '0.1.1-rc.2', () => {});
+    await manager.activate({ bin: join(root, 'new.cmd'), home, version: '0.1.7-rc.1' });
     expect(manager.info().pending).toBe(true);
     writeFileSync(join(home, 'original.json'), 'migrated'); writeFileSync(join(home, 'after.json'), 'keep');
-    await manager.restore(() => {});
-    expect(manager.home()).not.toBe(home); expect(readFileSync(join(manager.home(), 'original.json'), 'utf8')).toBe('before');
-    expect(readFileSync(join(home, 'after.json'), 'utf8')).toBe('keep'); expect(manager.env().DSH_BIN).toBe(join(root, 'old.cmd'));
+    await manager.confirm();
+    expect(manager.home()).toBe(home); expect(readFileSync(join(manager.home(), 'original.json'), 'utf8')).toBe('migrated');
+    expect(readFileSync(join(home, 'after.json'), 'utf8')).toBe('keep'); expect(manager.env().DSH_BIN).toBe(join(root, 'new.cmd'));
+    expect(existsSync(join(managedRoot, 'backups'))).toBe(false);
     expect(new ManagedInstall(managedRoot, {}).home()).toBe(manager.home());
     await expect(snapshotTree(home, join(home, 'bad-backup'))).rejects.toThrow('原数据目录');
   });

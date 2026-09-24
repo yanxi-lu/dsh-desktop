@@ -22,6 +22,7 @@ import {
   startDsh,
   waitForReady,
   killTree,
+  startupExitMessage,
 } from '../src/main/dsh';
 
 // R20 真机回归:mock node:child_process,锁定默认探测的 shell 行为与命令引号化。
@@ -269,7 +270,7 @@ describe('版本读取与一键更新', () => {
 // 测试用 spawn 替身:记录调用参数,返回一个假进程对象
 function fakeProc() {
   const emitter = new EventEmitter();
-  return Object.assign(emitter, { pid: 4242, kill: vi.fn() });
+  return Object.assign(emitter, { pid: 4242, kill: vi.fn(), send: vi.fn((_message, callback) => callback(null)) });
 }
 
 describe('startDsh', () => {
@@ -316,10 +317,10 @@ describe('startDsh', () => {
   });
 });
 
-describe('defaultSpawn(默认 spawn,R21)', () => {
+describe('defaultSpawn(监护进程)', () => {
   beforeEach(() => cpMocks.spawn.mockClear());
 
-  it('命令带引号且 shell:true(路径含空格不拆断)', async () => {
+  it('通过独立 IPC 参数传递带空格的命令，不在主进程拼接执行', async () => {
     // spawn 替身:返回假进程并异步触发 'spawn',供 defaultSpawn resolve
     cpMocks.spawn.mockImplementationOnce(() => {
       const proc = fakeProc();
@@ -333,26 +334,32 @@ describe('defaultSpawn(默认 spawn,R21)', () => {
       string[],
       { shell: boolean; windowsHide: boolean },
     ];
-    expect(cmdArg).toBe('"C:\\Program Files\\dsh\\dsh.cmd"');
-    expect(argsArg).toEqual(['web', '--no-open']);
-    expect(optsArg).toMatchObject({ shell: true, windowsHide: true });
+    expect(cmdArg).toBe(process.execPath);
+    expect(argsArg[0]).toBe('--eval');
+    expect(optsArg).toMatchObject({ shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    expect(r.proc.send).toHaveBeenCalledWith({ type: 'start', command: 'C:\\Program Files\\dsh\\dsh.cmd', args: ['web', '--no-open'] }, expect.any(Function));
   });
 
-  it('命令无空格时同样带引号(行为一致)', async () => {
+  it('使用主程序 Node 模式运行监护代码，子服务仍通过原 Harness 命令启动', async () => {
     cpMocks.spawn.mockImplementationOnce(() => {
       const proc = fakeProc();
       setImmediate(() => proc.emit('spawn'));
       return proc;
     });
-    await startDsh({ DSH_BIN: 'E:\\nodejs\\dsh.cmd' });
+    const started = await startDsh({ DSH_BIN: 'E:\\nodejs\\dsh.cmd' });
     const [cmdArg, argsArg, optsArg] = cpMocks.spawn.mock.calls[0] as unknown as [
       string,
       string[],
       { shell: boolean; windowsHide: boolean },
     ];
-    expect(cmdArg).toBe('"E:\\nodejs\\dsh.cmd"');
-    expect(argsArg).toEqual(['web', '--no-open']);
-    expect(optsArg).toMatchObject({ shell: true, windowsHide: true });
+    expect(cmdArg).toBe(process.execPath); expect(argsArg[0]).toBe('--eval');
+    expect(optsArg).toMatchObject({ env: { ELECTRON_RUN_AS_NODE: '1', DSH_BIN: 'E:\\nodejs\\dsh.cmd' } });
+    expect(started.proc.send).toHaveBeenCalledWith({ type: 'start', command: 'E:\\nodejs\\dsh.cmd', args: ['web', '--no-open'] }, expect.any(Function));
+  });
+  it('启动失败解释只来自已知错误分类，不回传原始日志', () => {
+    expect(startupExitMessage(1, [{ code: 'port-in-use', message: 'PRIVATE', count: 1, lastSeen: '' }])).toContain('3080');
+    expect(startupExitMessage(1, [{ code: 'port-in-use', message: 'PRIVATE', count: 1, lastSeen: '' }])).not.toContain('PRIVATE');
+    expect(startupExitMessage(1, [])).toContain('诊断');
   });
 });
 
